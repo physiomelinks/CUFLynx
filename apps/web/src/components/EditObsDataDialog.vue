@@ -1,457 +1,171 @@
 <script setup>
+/**
+ * "Edit obs_data": protocol-kit's obs_data editor (the same one PhLynx mounts) on a whole
+ * obs_data document -- its protocol_info, data_items, prediction_items and
+ * prediction_plots, and any key it does not know, which it keeps.
+ *
+ * By default it edits the open study's obs_data and saves a dated copy into the outputs
+ * directory, which is then loaded. A host can instead give it a `document` and a `save`
+ * (a workflow step's obs_data, say), and `preselect` parameters the protocol must set:
+ * each gets a lane with no value yet, which the editor reports until it is filled in.
+ */
 import { ref, computed, watch } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import {
-  splitItems,
-  predToRow,
-  newRow,
-  newPredRow,
-  buildObsData,
-  versionedJsonName,
-  experimentIdxMax,
-  FALLBACK_OPERATIONS,
-  FALLBACK_COST_TYPES,
-  FALLBACK_PLOT_TYPES,
-} from '../lib/obsDataJson'
-import { uploadObsData, getObsDataOptions } from '../lib/api'
-import ProtocolInfoEditor from './ProtocolInfoEditor.vue'
+  DATA_ITEM_VOCABULARY,
+  readObsDataOptions,
+  readObsDataParts,
+  validateDataItems,
+  validateProtocolInfo,
+} from '@physiomelinks/protocol-kit'
+import { ObsDataEditor } from '@physiomelinks/protocol-kit/editor'
+import '@physiomelinks/protocol-kit/editor.css'
+import { versionedJsonName, withParameters } from '../lib/obsDataJson'
+import { errorMessage, getObsDataDocument, getObsDataOptions, uploadObsData } from '../lib/api'
 import EditOperationFuncsDialog from './EditOperationFuncsDialog.vue'
-import SearchableSelect from './SearchableSelect.vue'
-import {
-  protocolToModel,
-  buildProtocolInfo,
-  emptyModel,
-  validateModel,
-} from '../lib/protocolInfo'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   modelId: { type: String, default: null },
-  currentDataItems: { type: Array, default: () => [] },
-  currentPredictionItems: { type: Array, default: () => [] },
-  // Loaded obs_data protocol_info, passed through verbatim (null for a new obs_data).
-  protocolInfo: { type: Object, default: null },
-  experimentCount: { type: Number, default: 0 },
-  // Model variables store slice (for operand / prediction variable choices).
+  // Model variables store slice: {params, odes, algebraic, all_names, initial_values, units}.
   modelVariables: { type: Object, default: () => ({}) },
   modelName: { type: String, default: null },
   loadedFilename: { type: String, default: null },
   // Where Save writes the dated copy (#215); '' falls back to the config dir.
   outputsDir: { type: String, default: '' },
+  // The time between recorded samples, to check each prediction item's range takes some.
+  dt: { type: Number, default: null },
+  // A document to edit instead of the study's obs_data (undefined: the study's).
+  document: { type: [Object, Array], default: undefined },
+  // Saves the edited document instead of writing the study's dated copy: (document) => Promise.
+  save: { type: Function, default: null },
+  // Parameters the protocol must set (a workflow step's unset ones, `C/x`), given lanes.
+  preselect: { type: Array, default: () => [] },
+  header: { type: String, default: 'Edit obs_data' },
+  hint: { type: String, default: '' },
 })
 const emit = defineEmits(['update:visible', 'saved'])
 
-const editableRows = ref([])
-const preservedItems = ref([])
-const predRows = ref([])
-const operations = ref(FALLBACK_OPERATIONS)
-// operation name -> {count, names, variadic}: how many operands it consumes,
-// introspected from CA so the editor offers the right number of fields (#147).
-const opOperands = ref({})
-// operation name -> @differentiable (from CA); empty when CA can't report it, in
-// which case no row is flagged (avoids false "not differentiable" warnings).
-const diffOps = ref({})
-// operation name -> [{name, default, type}] tunable keyword args (from CA), used
-// to render an editable input per kwarg on each data_item. Empty when CA can't
-// report it (older CA / offline), in which case no kwarg inputs show.
-const opKwargsSchema = ref({})
-const costTypes = ref(FALLBACK_COST_TYPES)
-// What CA applies when a data_item names no cost_type (#212). From CA, never
-// restated here — empty on an older CA, and the option then says plain
-// "default" rather than naming a cost function that may not be the one used.
-const defaultCostType = ref('')
-// Per-cost-function flags (is_MLE / is_combiner / differentiable) from CA, used
-// only to annotate the cost_type options; empty when CA doesn't expose them.
-const costMeta = ref({})
-// cost name -> [{name, default, type}] tunable keyword args (from CA, #370), the
-// cost-side twin of opKwargsSchema: an input per kwarg on each data_item that
-// selects that cost. Empty on a CA without the contract, so nothing renders.
-const costKwargsSchema = ref({})
-// cost name -> declares **kwargs. Consulted only before deleting a stored kwarg:
-// a func that accepts anything, or one CA never reported on, must keep its keys.
-const costKwargsAcceptAny = ref({})
-const plotTypes = ref(FALLBACK_PLOT_TYPES)
-const protocolModel = ref(null)
-const activeExp = ref(0)
-// 0-based subexp of the last-selected data_item, lightly highlighted in the
-// embedded protocol timeline. null = nothing selected.
-const highlightSubexp = ref(null)
-// Experiment the highlighted subexp belongs to (so it only shows in that exp's
-// timeline), and the currently selected row (shown distinctly in the list).
-const highlightExp = ref(null)
-const selectedRow = ref(null)
+const doc = ref(null)
+const vocabulary = ref(DATA_ITEM_VOCABULARY)
+const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
-// "Custom operations" authoring dialog (issue #58).
+// "Custom funcs" authoring dialog (issue #58).
 const opFuncsOpen = ref(false)
 
-// Fetch the CA-sourced option lists (pass refresh=true to re-introspect CA after
-// a custom operation is added, so the new op appears in the dropdown).
+// Fetch the CA-sourced vocabulary (refresh=true re-introspects CA after a custom
+// func is added, so it is offered).
 async function loadOptions(refresh = false) {
   try {
-    // Pass the output dir so the user's custom funcs (stored there) show up.
-    const opts = await getObsDataOptions(refresh, localStorage.getItem('cuflynx-outputs-dir') || '')
-    if (opts?.operations?.length) operations.value = opts.operations
-    if (opts?.differentiable_operations) diffOps.value = opts.differentiable_operations
-    if (opts?.operation_kwargs_schema) opKwargsSchema.value = opts.operation_kwargs_schema
-    if (opts?.operation_operands) opOperands.value = opts.operation_operands
-    if (opts?.cost_types?.length) costTypes.value = opts.cost_types
-    defaultCostType.value = opts?.default_cost_type || ''
-    if (opts?.cost_func_metadata) costMeta.value = opts.cost_func_metadata
-    if (opts?.cost_kwargs_schema) costKwargsSchema.value = opts.cost_kwargs_schema
-    if (opts?.cost_kwargs_accepts_any) costKwargsAcceptAny.value = opts.cost_kwargs_accepts_any
-    if (opts?.plot_types?.length) plotTypes.value = opts.plot_types
+    // The output dir locates the user's custom funcs.
+    const options = await getObsDataOptions(refresh, localStorage.getItem('cuflynx-outputs-dir') || '')
+    vocabulary.value = readObsDataOptions(options)
   } catch {
-    /* keep fallbacks — editor still works offline */
+    /* keep the built-in vocabulary: the editor still works offline */
   }
 }
 
-// Re-introspect CA after a custom operation is saved so it shows in the dropdown.
-async function onOpFuncsSaved() {
-  await loadOptions(true)
-}
-
-// Rebuild on open: fetch the CA-sourced option lists FIRST, then split the
-// loaded items against the live operations so user-op constants stay editable.
 watch(
   () => props.visible,
-  async (v) => {
-    if (!v) return
+  async (visible) => {
+    if (!visible) return
     error.value = ''
-    await loadOptions()
-    const { editable, preserved } = splitItems(props.currentDataItems, operations.value)
-    // A hand-written obs_data can carry fewer operands than its operation takes;
-    // grow-only, so opening a file never drops operands the user wrote.
-    editable.forEach((row) => syncOperands(row, { growOnly: true }))
-    editableRows.value = editable
-    preservedItems.value = preserved
-    predRows.value = (props.currentPredictionItems ?? []).map(predToRow)
-    // An obs_data always has a protocol_info; a new one starts from one experiment.
-    protocolModel.value = props.protocolInfo ? protocolToModel(props.protocolInfo) : emptyModel()
-    activeExp.value = 0
-    highlightSubexp.value = null
-    highlightExp.value = null
-    selectedRow.value = null
+    loading.value = true
+    try {
+      await loadOptions()
+      let start = props.document
+      if (start === undefined && props.modelId) {
+        try {
+          start = await getObsDataDocument(props.modelId)
+        } catch (e) {
+          error.value = errorMessage(e)
+        }
+      }
+      // An obs_data always has a protocol_info: a new one starts from one experiment.
+      doc.value = withParameters(start ?? null, props.preselect)
+    } finally {
+      loading.value = false
+    }
   },
   { immediate: true },
 )
 
-const allNames = computed(() => props.modelVariables?.all_names ?? [])
-const operandOptions = computed(() => ['time', ...allNames.value])
-const hasProtocol = computed(() => protocolModel.value != null)
-// Experiment/subexperiment counts come from the working protocol model once one
-// exists, so data_item idx selects track edits to the protocol.
-const experimentCountModel = computed(() =>
-  protocolModel.value ? protocolModel.value.experiments.length : props.experimentCount,
-)
-const expMax = computed(() => experimentIdxMax(experimentCountModel.value))
-const expOptions = computed(() => Array.from({ length: expMax.value + 1 }, (_, i) => i))
-function subexpOptions(expIdx) {
-  const n = protocolModel.value?.experiments?.[expIdx]?.subexps?.length ?? 1
-  return Array.from({ length: Math.max(1, n) }, (_, i) => i)
-}
+const KINDS = [
+  ['params', 'constant'],
+  ['odes', 'state'],
+  ['algebraic', 'variable'],
+]
 
-// Clamp data_item / prediction idxs into range whenever experiments or
-// subexperiments are added/removed, so the backend never sees an out-of-range idx.
-watch(
-  () =>
-    protocolModel.value
-      ? protocolModel.value.experiments.map((e) => e.subexps.length).join(',')
-      : '',
-  () => {
-    const m = protocolModel.value
-    if (!m) return
-    const nExp = m.experiments.length
-    const clampExp = (r) => {
-      if ((r.experiment_idx ?? 0) > nExp - 1) r.experiment_idx = Math.max(0, nExp - 1)
+/** The model's variables as the editor takes them, and the preselected parameters it may lack. */
+const variables = computed(() => {
+  const mv = props.modelVariables ?? {}
+  const seen = new Set()
+  const out = []
+  for (const [key, kind] of KINDS) {
+    for (const name of mv[key] ?? []) {
+      if (seen.has(name)) continue
+      seen.add(name)
+      out.push({ name, kind, unit: mv.units?.[name], value: mv.initial_values?.[name] })
     }
-    for (const r of editableRows.value) {
-      clampExp(r)
-      const nSub = m.experiments[r.experiment_idx]?.subexps.length ?? 1
-      if ((r.subexperiment_idx ?? 0) > nSub - 1) r.subexperiment_idx = Math.max(0, nSub - 1)
-    }
-    predRows.value.forEach(clampExp)
-  },
+  }
+  for (const name of [...(mv.all_names ?? []), ...props.preselect]) {
+    if (seen.has(name)) continue
+    seen.add(name)
+    out.push({
+      name,
+      kind: props.preselect.includes(name) ? 'constant' : 'variable',
+      unit: mv.units?.[name],
+    })
+  }
+  return out
+})
+
+function getValue(name) {
+  return props.modelVariables?.initial_values?.[name]
+}
+
+/** What circulatory_autogen would refuse of the document; Save waits for none. */
+const problems = computed(() => {
+  if (!doc.value) return []
+  const { protocolInfo } = readObsDataParts(doc.value)
+  const protocol = protocolInfo ? validateProtocolInfo(protocolInfo).errors : []
+  const items = validateDataItems(doc.value, { vocabulary: vocabulary.value }).errors ?? []
+  return [...protocol, ...items]
+})
+
+const dataItemCount = computed(() =>
+  doc.value ? (readObsDataParts(doc.value).dataItems?.length ?? 0) : 0,
 )
-
-const modelErrors = computed(() =>
-  protocolModel.value ? validateModel(protocolModel.value) : [],
-)
-
-// Annotate a cost_type option with its CA flags (MLE / combiner / AD) when known,
-// e.g. "gaussian_MLE — MLE"; falls back to the bare name when CA has no metadata.
-function costTypeLabel(ct) {
-  const m = costMeta.value[ct]
-  if (!m) return ct
-  const tags = []
-  if (m.is_MLE) tags.push('MLE')
-  if (m.is_combiner) tags.push('combiner')
-  if (m.differentiable) tags.push('AD')
-  return tags.length ? `${ct} — ${tags.join(', ')}` : ct
-}
-
-function onNum(row, field, value) {
-  row[field] = value === '' ? null : Number(value)
-}
-
-function rowInvalid(row) {
-  return (
-    !Number.isFinite(Number(row.value)) ||
-    !Number.isFinite(Number(row.std)) ||
-    Number(row.std) <= 0 ||
-    !rowHasInputs(row)
-  )
-}
-
-/**
- * An item needs *somewhere* to get its inputs from: an operand, or a keyword
- * argument. This is CA's own rule (paramID.py: "need ensure 'operands' or
- * 'operation_kwargs' exist"), and requiring an operand unconditionally is what
- * made `calculate_two_observable_difference` unsaveable here (#349) -- it reduces
- * no model variable at all, it differences two other data_items named in its
- * kwargs, so its operands are legitimately empty.
- */
-function rowHasInputs(row) {
-  if ((row.operands ?? []).filter((o) => o).length >= 1) return true
-  const kw = row.operation_kwargs
-  return !!row.operation && !!kw && typeof kw === 'object' && Object.keys(kw).length > 0
-}
-
-// True when this row's operation is a real op CA reports as NOT @differentiable,
-// so it blocks AD gradients. Only flags when CA supplied the map (else no map ->
-// no warning) and the op is non-empty and explicitly non-differentiable.
-function isNonDifferentiable(operation) {
-  const op = operation
-  if (!op || !Object.keys(diffOps.value).length) return false
-  return diffOps.value[op] !== true
-}
-
-// The tunable keyword args (name/default/type) for a row's current operation, or
-// [] when the operation has none / CA didn't report a schema.
-function kwargsForRow(row) {
-  return opKwargsSchema.value[row.operation] ?? []
-}
-// The stored value for a kwarg, falling back to its default when unset, so every
-// input renders prefilled with the operation's default.
-function kwargVal(row, kw) {
-  const stored = row.operation_kwargs?.[kw.name]
-  return stored === undefined ? kw.default : stored
-}
-// Persist an edited kwarg value on the row (coerced to the kwarg's type).
-function onKwarg(row, kw, raw) {
-  if (!row.operation_kwargs || typeof row.operation_kwargs !== 'object') row.operation_kwargs = {}
-  // Choosing the blank option means "not set", so drop the key rather than write
-  // an empty string: CA would take '' as a name to resolve and fail to find it.
-  if (kw.type === 'data_item' && !raw) {
-    delete row.operation_kwargs[kw.name]
-    return
-  }
-  let val = raw
-  if (kw.type === 'boolean') val = !!raw
-  else if (kw.type === 'integer' || kw.type === 'number') val = raw === '' || raw == null ? null : Number(raw)
-  row.operation_kwargs[kw.name] = val
-}
-/**
- * The other data_items this row's kwargs may reference by name. CA resolves *any*
- * string kwarg whose value matches a data_item_name to that item's computed value,
- * so this is the whole list, minus the row itself (an item cannot be its own input).
- */
-function referenceableItems(row) {
-  return editableRows.value
-    .filter((r) => r !== row && r.data_item_name)
-    .map((r) => r.data_item_name)
-}
-
-/**
- * The options for one data_item kwarg: the other items, plus whatever is already
- * stored if that no longer names one of them.
- *
- * A select cannot display a value it has no option for, so a reference to an item
- * since renamed or deleted would render as blank -- indistinguishable from unset,
- * and saving the row would then quietly drop it. Keeping the dangling name in the
- * list means it stays visible, stays saved, and the user can see what to fix.
- */
-function referenceOptions(row, kw) {
-  const options = referenceableItems(row)
-  const stored = row.operation_kwargs?.[kw.name]
-  if (typeof stored === 'string' && stored && !options.includes(stored)) {
-    return [...options, stored]
-  }
-  return options
-}
-
-// The tunable keyword args for a row's current cost func, or [] when it has none
-// / CA didn't report a schema. Same shape as the operation kwargs, so the two
-// render through the same inputs.
-function costKwargsForRow(row) {
-  return costKwargsSchema.value[row.cost_type] ?? []
-}
-function costKwargVal(row, kw) {
-  const stored = row.cost_kwargs?.[kw.name]
-  return stored === undefined ? kw.default : stored
-}
-function onCostKwarg(row, kw, raw) {
-  if (!row.cost_kwargs || typeof row.cost_kwargs !== 'object') row.cost_kwargs = {}
-  let val = raw
-  if (kw.type === 'boolean') val = !!raw
-  else if (kw.type === 'integer' || kw.type === 'number') val = raw === '' || raw == null ? null : Number(raw)
-  row.cost_kwargs[kw.name] = val
-}
-// Change a row's cost_type, dropping kwargs the new cost func has no parameter
-// for — CA rejects those outright at calibration setup (#370), so leaving them
-// would trade an editable field for a run that refuses to start.
-//
-// Only when CA actually said the new func accepts nothing else: `accepts_any`
-// unknown (older CA, offline, or a cost the fallback list invented) or true means
-// "not in the schema" reads as "unknown", not "invalid", and deleting the user's
-// values on that basis is the data loss this editor keeps being bitten by.
-function onCostTypeChange(row, costType) {
-  row.cost_type = costType
-  const kw = row.cost_kwargs
-  if (!kw || typeof kw !== 'object') return
-  if (costKwargsAcceptAny.value[costType] !== false) return
-  const valid = new Set(costKwargsForRow(row).map((k) => k.name))
-  for (const key of Object.keys(kw)) if (!valid.has(key)) delete kw[key]
-}
-// Change a row's operation and drop any stored kwargs that don't belong to the new
-// operation, so stale values from a previous operation never leak into the save.
-function onOperationChange(row, operation) {
-  row.operation = operation
-  // Every operation now declares what it accepts, so a key the new one does not
-  // name is stale by definition and would be refused by CA at run time.
-  const kw = row.operation_kwargs
-  if (kw && typeof kw === 'object') {
-    const valid = new Set(kwargsForRow(row).map((k) => k.name))
-    for (const key of Object.keys(kw)) if (!valid.has(key)) delete kw[key]
-  }
-  // The operand count belongs to the operation too (#147).
-  syncOperands(row)
-}
 
 const canSave = computed(
-  () => !saving.value && !editableRows.value.some(rowInvalid) && modelErrors.value.length === 0,
+  () => !saving.value && !loading.value && !!doc.value && problems.value.length === 0,
 )
 
-// Selecting a data_item row points the embedded protocol editor at that item's
-// experiment and lightly highlights its target subexperiment.
-function selectRow(row) {
-  // Clicking anywhere on a data_item expands it (so its details are visible) and
-  // marks it selected.
-  selectedRow.value = row
-  row._expanded = true
-  if (!protocolModel.value) return
-  activeExp.value = Number(row.experiment_idx ?? 0)
-  highlightExp.value = Number(row.experiment_idx ?? 0)
-  highlightSubexp.value = Number(row.subexperiment_idx ?? 0)
-}
-
-// Chevron: a down-chevron (collapsed) expands AND highlights the item; an
-// up-chevron (expanded) just collapses it without changing the selection.
-function toggleRow(row) {
-  if (row._expanded) row._expanded = false
-  else selectRow(row)
-}
-
-function addRow() {
-  const row = newRow(0)
-  // A new row starts on the default operation with no operands. That operation
-  // has a fixed arity, so the add/remove controls are hidden -- leaving a row
-  // with zero operand fields and no way to make one. Give it the fields its
-  // operation takes, the same way changing the operation does.
-  syncOperands(row)
-  editableRows.value.push(row)
-}
-function removeRow(i) {
-  editableRows.value.splice(i, 1)
-}
-function onOperandChange(row, i, val) {
-  row.operands[i] = val
-  // seed the item's name from its first operand, so the common one-operand case needs no
-  // typing -- but only while the name is still blank, since it must end up unique (CA #466)
-  if (!row.data_item_name && row.operands[0]) row.data_item_name = row.operands[0]
-}
-
-function onPredVariableChange(row, val) {
-  row.operands = val ? [val] : []
-  if (!row.data_item_name && val) row.data_item_name = val
-}
-
-/** What CA says this operation consumes; null when we have no schema for it. */
-function operandSpec(row) {
-  return opOperands.value?.[row.operation] ?? null
-}
-
-/**
- * The operand count is a property of the operation, not something to guess
- * (#147): `division` takes two, `max` takes one. A variadic operation has no
- * fixed count, so its fields stay hand-managed.
- */
-function operandCountFor(row) {
-  const spec = operandSpec(row)
-  return spec && !spec.variadic ? spec.count : null
-}
-
-function operandsAreFixed(row) {
-  return operandCountFor(row) !== null
-}
-
-/** Label an operand field with the parameter it fills, e.g. x1 / x2. */
-function operandLabel(row, i) {
-  return operandSpec(row)?.names?.[i] ?? ''
-}
-
-/**
- * Resize a row's operands to what its operation takes. Values already entered
- * are kept positionally -- switching max -> division should keep the operand you
- * chose as x1 rather than clearing the row.
- */
-function syncOperands(row, { growOnly = false } = {}) {
-  const want = operandCountFor(row)
-  if (want === null) return
-  const ops = row.operands ?? (row.operands = [])
-  while (ops.length < want) ops.push('')
-  // Truncating is right when the user picks a different operation, and wrong
-  // when a file is merely opened: an obs_data carrying more operands than CA's
-  // spec says is the user's to keep, not ours to quietly rewrite.
-  if (!growOnly && ops.length > want) ops.splice(want)
-}
-
-
-function addOperand(row) {
-  row.operands.push('')
-}
-function addPred() {
-  predRows.value.push(newPredRow(0))
-}
-function removePred(i) {
-  predRows.value.splice(i, 1)
+async function onOpFuncsSaved() {
+  await loadOptions(true)
 }
 
 async function onSave() {
   error.value = ''
-  const protocolInfo = protocolModel.value
-    ? buildProtocolInfo(protocolModel.value, props.protocolInfo)
-    : null
-  const obsData = buildObsData({
-    protocolInfo,
-    editableRows: editableRows.value,
-    preservedItems: preservedItems.value,
-    predictionRows: predRows.value,
-  })
-  const filename = versionedJsonName(props.loadedFilename, props.modelName)
   saving.value = true
   try {
-    // Written server-side into the output directory (#215), not downloaded.
-    const summary = await uploadObsData(props.modelId, obsData, {
-      filename,
-      outputsDir: props.outputsDir,
-    })
-    emit('saved', { ...summary, filename })
+    if (props.save) {
+      emit('saved', await props.save(doc.value))
+    } else {
+      const filename = versionedJsonName(props.loadedFilename, props.modelName)
+      // Written server-side into the output directory (#215), not downloaded.
+      const summary = await uploadObsData(props.modelId, doc.value, {
+        filename,
+        outputsDir: props.outputsDir,
+      })
+      emit('saved', { ...summary, filename })
+    }
     emit('update:visible', false)
   } catch (e) {
-    error.value = e?.response?.data?.detail || String(e)
+    error.value = errorMessage(e)
   } finally {
     saving.value = false
   }
@@ -462,338 +176,58 @@ async function onSave() {
   <Dialog
     :visible="visible"
     modal
-    header="Edit obs_data"
-    :style="{ width: '60rem' }"
+    :header="header"
+    :style="{ width: '64rem' }"
     data-testid="edit-obs"
     @update:visible="emit('update:visible', $event)"
   >
     <p class="eo-hint">
-      Edit the observation targets. Saving writes a new
-      <code>…_yymmdd.json</code> to the output directory (the original is kept) and applies it.
+      <template v-if="hint">{{ hint }}</template>
+      <template v-else>
+        Edit the observation targets. Saving writes a new
+        <code>…_yymmdd.json</code> to the output directory (the original is kept) and applies it.
+      </template>
     </p>
 
     <Message v-if="error" severity="error" data-testid="eo-error" :closable="false">
       {{ error }}
     </Message>
 
-    <h3 class="eo-section">protocol_info</h3>
-    <ProtocolInfoEditor
-      v-model:active-exp="activeExp"
-      data-testid="eo-protocol"
-      :model="protocolModel"
-      :all-names="allNames"
-      :initial-values="modelVariables?.initial_values ?? {}"
-      :highlight-subexp="highlightSubexp"
-      :highlight-exp="highlightExp"
-    />
-    <Message
-      v-if="modelErrors.length"
-      severity="warn"
-      :closable="false"
-      data-testid="eo-model-error"
-    >
-      {{ modelErrors.join('; ') }}
-    </Message>
-
-    <div class="eo-section-row">
-      <h3 class="eo-section">data_items</h3>
-      <Button
-        label="Custom funcs"
-        icon="pi pi-code"
-        size="small"
-        text
-        data-testid="eo-add-op-func"
-        title="Write your own operation or cost function in Python"
-        @click="opFuncsOpen = true"
-      />
-    </div>
-    <div class="eo-head">
-      <span>name</span>
-      <span>value</span>
-      <span>std</span>
-      <span>operation</span>
-      <span>exp</span>
-      <span>sub</span>
-      <span />
-    </div>
-    <ul class="eo-list" data-testid="eo-data-items">
-      <!-- The per-row testids below (eo-value / eo-std / eo-operation /
-           eo-weight / eo-cost-type) repeat on every row: they mark the first
-           data_item for the guided tour, which anchors on the first match.
-           eo-operation reaches the picker's button through SearchableSelect's
-           `testid` prop. -->
-      <li
-        v-for="(row, i) in editableRows"
-        :key="i"
-        :class="{
-          invalid: rowInvalid(row),
-          selected: row === selectedRow,
-          'non-diff': isNonDifferentiable(row.operation),
-        }"
-        data-testid="eo-row"
+    <div data-testid="eo-protocol">
+      <ObsDataEditor
+        v-if="doc"
+        v-model:document="doc"
+        :variables="variables"
+        :get-value="getValue"
+        :vocabulary="vocabulary"
+        :dt="dt"
+        preset="cuflynx"
       >
-        <div class="eo-main" data-testid="eo-main" @click="selectRow(row)">
-          <input
-            type="text"
-            class="eo-var"
-            :value="row.data_item_name"
-            @input="row.data_item_name = $event.target.value"
+        <template #data-items-actions>
+          <Button
+            label="Custom funcs"
+            icon="pi pi-code"
+            size="small"
+            text
+            data-testid="eo-add-op-func"
+            title="Write your own operation or cost function in Python"
+            @click="opFuncsOpen = true"
           />
-          <input
-            type="number"
-            step="any"
-            :value="row.value"
-            data-testid="eo-value"
-            @input="onNum(row, 'value', $event.target.value)"
-          />
-          <input
-            type="number"
-            step="any"
-            :value="row.std"
-            data-testid="eo-std"
-            @input="onNum(row, 'std', $event.target.value)"
-          />
-          <SearchableSelect
-            :model-value="row.operation"
-            :options="operations"
-            placeholder="(none)"
-            :label-for="(op) => op || '(none)'"
-            :class-for="(op) => (isNonDifferentiable(op) ? 'non-diff-option' : '')"
-            testid="eo-operation"
-            @focus="selectRow(row)"
-            @update:model-value="onOperationChange(row, $event)"
-          />
-          <select
-            :value="row.experiment_idx"
-            @focus="selectRow(row)"
-            @change="row.experiment_idx = Number($event.target.value); selectRow(row)"
-          >
-            <option v-for="e in expOptions" :key="e" :value="e">{{ e }}</option>
-          </select>
-          <select
-            :value="row.subexperiment_idx"
-            data-testid="eo-subexp"
-            @focus="selectRow(row)"
-            @change="row.subexperiment_idx = Number($event.target.value); selectRow(row)"
-          >
-            <option v-for="su in subexpOptions(row.experiment_idx)" :key="su" :value="su">{{ su }}</option>
-          </select>
-          <span class="eo-rowbtns">
-            <Button
-              :icon="row._expanded ? 'pi pi-chevron-up' : 'pi pi-chevron-down'"
-              text
-              rounded
-              size="small"
-              aria-label="details"
-              @click.stop="toggleRow(row)"
-            />
-            <Button
-              icon="pi pi-times"
-              text
-              rounded
-              size="small"
-              severity="danger"
-              aria-label="remove"
-              data-testid="eo-remove-row"
-              @click.stop="removeRow(i)"
-            />
-          </span>
-        </div>
-
-        <p
-          v-if="isNonDifferentiable(row.operation)"
-          class="eo-nondiff-warn"
-          data-testid="eo-nondiff-warn"
-        >
-          <i class="pi pi-exclamation-triangle" />
-          Operation “{{ row.operation }}” is not differentiable — automatic
-          differentiation (AD) gradients are unavailable; gradient-based
-          calibration/sensitivity falls back to finite differences.
-        </p>
-
-        <div v-if="row._expanded" class="eo-detail">
-          <label>operands
-            <span class="eo-operands" data-testid="eo-operands">
-              <span v-for="(op, oi) in row.operands" :key="oi" class="eo-operand">
-                <!--
-                  A fixed-arity operation names what each field fills (x1 / x2),
-                  so a two-operand operation says which is which rather than
-                  leaving the order to be inferred (#147).
-                -->
-                <span v-if="operandLabel(row, oi)" class="eo-operand-name">
-                  {{ operandLabel(row, oi) }}
-                </span>
-                <SearchableSelect
-                  :model-value="op"
-                  :options="operandOptions"
-                  testid="eo-operand"
-                  @update:model-value="onOperandChange(row, oi, $event)"
-                />
-                <!--
-                  No remove button beside the field. It sat between the operand
-                  and the next one and made the row read as a toolbar; and it is
-                  no longer needed, because choosing the picker's own empty entry
-                  clears the operand and rowToItem drops empties on save. One
-                  affordance, in the place you are already looking.
-                -->
-              </span>
-              <Button
-                v-if="!operandsAreFixed(row)"
-                icon="pi pi-plus"
-                label="operand"
-                text
-                size="small"
-                data-testid="eo-operand-add"
-                @click="addOperand(row)"
-              />
-            </span>
-          </label>
-          <label>trace label
-            <input type="text" :value="row.trace_name_for_plotting" @input="row.trace_name_for_plotting = $event.target.value" />
-          </label>
-          <label>unit
-            <input type="text" :value="row.unit" @input="row.unit = $event.target.value" />
-          </label>
-          <label>weight
-            <input type="number" step="any" :value="row.weight" data-testid="eo-weight" @input="onNum(row, 'weight', $event.target.value)" />
-          </label>
-          <label>cost_type
-            <select :value="row.cost_type" data-testid="eo-cost-type" @change="onCostTypeChange(row, $event.target.value)">
-              <!-- Naming the default matters: "default" alone leaves the user
-                   guessing which cost their unlabelled data_items are scored
-                   by, and CA's answer has changed (#212). -->
-              <option value="">
-                {{ defaultCostType ? `(default — ${defaultCostType})` : '(default)' }}
-              </option>
-              <option v-for="ct in costTypes" :key="ct" :value="ct">{{ costTypeLabel(ct) }}</option>
-            </select>
-          </label>
-          <!--
-            One input per keyword argument the chosen cost func declares; written
-            to the data_item's cost_kwargs (CA #370), the same way the operation's
-            kwargs are written to operation_kwargs.
-          -->
-          <label
-            v-for="kw in costKwargsForRow(row)"
-            :key="`cost-${kw.name}`"
-            :data-testid="`eo-cost-kwarg-${kw.name}`"
-            :title="`cost_kwargs (default ${kw.default})`"
-          >
-            {{ kw.name }}
-            <input
-              v-if="kw.type === 'boolean'"
-              type="checkbox"
-              class="eo-kwarg-bool"
-              :checked="!!costKwargVal(row, kw)"
-              @change="onCostKwarg(row, kw, $event.target.checked)"
-            />
-            <input
-              v-else
-              :type="kw.type === 'number' || kw.type === 'integer' ? 'number' : 'text'"
-              :step="kw.type === 'integer' ? 1 : 'any'"
-              :value="costKwargVal(row, kw)"
-              @input="onCostKwarg(row, kw, $event.target.value)"
-            />
-          </label>
-          <label>plot_type
-            <select :value="row.plot_type" @change="row.plot_type = $event.target.value">
-              <option v-for="pt in plotTypes" :key="pt" :value="pt">{{ pt || '(none)' }}</option>
-            </select>
-          </label>
-          <label
-            v-for="kw in kwargsForRow(row)"
-            :key="kw.name"
-            :data-testid="`eo-kwarg-${kw.name}`"
-            :title="`operation kwarg (default ${kw.default})`"
-          >
-            {{ kw.name }}
-            <input
-              v-if="kw.type === 'boolean'"
-              type="checkbox"
-              class="eo-kwarg-bool"
-              :checked="!!kwargVal(row, kw)"
-              @change="onKwarg(row, kw, $event.target.checked)"
-            />
-            <!--
-              A kwarg of an operation that reduces no trace holds another
-              data_item's name (#349), so it is chosen, not typed: CA resolves the
-              string against the study's data_item_names, and a typo is a run that
-              fails or silently reads the wrong observable.
-            -->
-            <select
-              v-else-if="kw.type === 'data_item'"
-              :value="kwargVal(row, kw) ?? ''"
-              :data-testid="`eo-kwarg-select-${kw.name}`"
-              @change="onKwarg(row, kw, $event.target.value)"
-            >
-              <option value="">—</option>
-              <option v-for="name in referenceOptions(row, kw)" :key="name" :value="name">
-                {{ name }}
-              </option>
-            </select>
-            <input
-              v-else
-              :type="kw.type === 'number' || kw.type === 'integer' ? 'number' : 'text'"
-              :step="kw.type === 'integer' ? 1 : 'any'"
-              :value="kwargVal(row, kw)"
-              @input="onKwarg(row, kw, $event.target.value)"
-            />
-          </label>
-          <label class="eo-wide">source — where this data came from (e.g. paper / dataset / DOI)
-            <textarea
-              rows="2"
-              :value="row.source"
-              data-testid="eo-source"
-              @input="row.source = $event.target.value"
-            />
-          </label>
-          <label class="eo-wide">comment
-            <textarea
-              rows="2"
-              :value="row.comment"
-              data-testid="eo-comment"
-              @input="row.comment = $event.target.value"
-            />
-          </label>
-        </div>
-      </li>
-      <li v-if="!editableRows.length" class="eo-empty">No editable data_items. Add one below.</li>
-    </ul>
-    <Button label="Add data item" icon="pi pi-plus" size="small" text data-testid="obs-add-row" @click="addRow" />
-
-    <template v-if="hasProtocol">
-      <h3 class="eo-section">prediction_items</h3>
-      <ul class="eo-list">
-        <li v-for="(row, i) in predRows" :key="i" data-testid="eo-pred-row">
-          <div class="eo-pred">
-            <select :value="row.operands[0] ?? ''" @change="onPredVariableChange(row, $event.target.value)">
-              <option value="">—</option>
-              <option v-for="name in allNames" :key="name" :value="name">{{ name }}</option>
-            </select>
-            <input type="text" placeholder="unit" :value="row.unit" @input="row.unit = $event.target.value" />
-            <input type="text" placeholder="trace label" :value="row.trace_name_for_plotting" @input="row.trace_name_for_plotting = $event.target.value" />
-            <select :value="row.experiment_idx" @change="row.experiment_idx = Number($event.target.value)">
-              <option v-for="e in expOptions" :key="e" :value="e">{{ e }}</option>
-            </select>
-            <Button icon="pi pi-times" text rounded size="small" severity="danger" aria-label="remove" @click="removePred(i)" />
-          </div>
-        </li>
-      </ul>
-      <Button label="Add prediction" icon="pi pi-plus" size="small" text data-testid="obs-add-pred" @click="addPred" />
-    </template>
-
-    <p v-if="preservedItems.length" class="eo-preserved" data-testid="obs-preserved">
-      {{ preservedItems.length }} non-editable item(s) (series / frequency / custom
-      operation) will be preserved unchanged.
-    </p>
+        </template>
+      </ObsDataEditor>
+    </div>
 
     <template #footer>
-      <span class="eo-count">{{ editableRows.length }} data item(s)</span>
+      <span class="eo-count">{{ dataItemCount }} data item(s)</span>
+      <span v-if="problems.length" class="eo-blocked" data-testid="eo-problems">
+        {{ problems.length }} problem(s) to fix before saving
+      </span>
       <Button label="Cancel" size="small" text @click="emit('update:visible', false)" />
       <Button
         label="Save"
         size="small"
         :disabled="!canSave"
+        :loading="saving"
         data-testid="eo-save"
         @click="onSave"
       />
@@ -809,196 +243,13 @@ async function onSave() {
   opacity: 0.75;
   margin: 0 0 0.5rem;
 }
-.eo-section {
-  margin: 0.75rem 0 0.35rem;
-  font-size: 0.9rem;
-}
-.eo-section-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-.eo-head,
-.eo-main {
-  display: grid;
-  grid-template-columns: 1.4fr 0.8fr 0.8fr 1.2fr 0.5fr 0.5fr 4rem;
-  align-items: center;
-  gap: 0.4rem;
-}
-.eo-head {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  opacity: 0.55;
-  padding: 0 0.3rem 0.25rem;
-}
-.eo-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 48vh;
-  overflow-y: auto;
-  border: 1px solid var(--p-content-border-color, #333);
-  border-radius: 6px;
-}
-.eo-list li {
-  padding: 0.3rem;
-  border-top: 1px solid var(--p-content-border-color, #2a2a2a);
-}
-.eo-list li:first-child {
-  border-top: none;
-}
-.eo-list li.invalid {
-  background: rgba(232, 74, 95, 0.12);
-}
-/* A subtle orange tinge on rows whose operation isn't @differentiable (blocks
-   AD). An actual error (invalid) still wins the background. */
-.eo-list li.non-diff:not(.invalid) {
-  background: rgba(237, 125, 49, 0.12);
-}
-/* Light-orange background on operation <option>s that aren't @differentiable, so
-   AD/FSA-blocking choices stand out in the dropdown (Chromium styles natively). */
-/* `.non-diff-option` is NOT here: SearchableSelect teleports its list to <body>,
-   so an option element is outside this component's scope and a scoped rule can
-   never reach it. It lives in SearchableSelect's global block instead. */
-.eo-nondiff-warn {
-  display: flex;
-  align-items: baseline;
-  gap: 0.35rem;
-  margin: 0.1rem 0.3rem 0.2rem;
-  font-size: 0.78rem;
-  color: #ed7d31;
-}
-.eo-nondiff-warn .pi {
-  font-size: 0.72rem;
-}
-/* The currently selected data_item stands out with an accent bar + tint. */
-.eo-list li.selected {
-  box-shadow: inset 3px 0 0 0 var(--p-primary-color, #5b9bd5);
-}
-.eo-list li.selected:not(.invalid) {
-  background: rgba(91, 155, 213, 0.16);
-}
-.eo-rowbtns {
-  display: flex;
-  justify-content: flex-end;
-}
-.eo-detail {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 0.4rem;
-  margin: 0.4rem 0 0.2rem;
-  padding-left: 0.3rem;
-}
-.eo-detail label {
-  display: flex;
-  flex-direction: column;
-  font-size: 0.7rem;
-  opacity: 0.8;
-  gap: 0.15rem;
-}
-/* Free-text notes (source / comment) span the full detail width, stretchable. */
-.eo-wide {
-  grid-column: 1 / -1;
-}
-.eo-detail textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0.3rem 0.4rem;
-  font: inherit;
-  font-size: 0.78rem;
-  color: inherit;
-  background: var(--p-content-background, #1b1b1b);
-  border: 1px solid var(--p-content-border-color, #3a3a3a);
-  border-radius: 4px;
-  resize: vertical;
-  min-height: 2.2rem;
-}
-.eo-detail textarea:focus {
-  outline: none;
-  border-color: var(--p-primary-color, #5b9bd5);
-  box-shadow: 0 0 0 2px rgba(91, 155, 213, 0.2);
-}
-/* A kwarg boolean is a checkbox, not a full-width field. */
-.eo-detail .eo-kwarg-bool {
-  width: auto;
-  height: auto;
-  align-self: start;
-}
-.eo-operand-name {
-  font-size: 0.7rem;
-  opacity: 0.6;
-  min-width: 1.2rem;
-}
-/* One operand per line, each stretched to the field width.
-   Previously a wrapping row of shrink-to-fit flex items, which is why the
-   picker came out narrower than the fields beside it however it was styled:
-   `width: 100%` on the control resolved against a parent that was itself only
-   as wide as its content. */
-.eo-operands {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0.25rem;
-}
-.eo-operand {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-/* The picker takes the room the row has; min-width:0 lets it shrink rather
-   than forcing the row wider than the grid cell. */
-.eo-operand :deep(.ss) {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.eo-pred {
-  display: grid;
-  grid-template-columns: 1.4fr 0.9fr 1.1fr 0.6fr 2rem;
-  align-items: center;
-  gap: 0.4rem;
-}
-.eo-empty {
-  opacity: 0.5;
-  font-size: 0.8rem;
-}
-.eo-preserved {
-  font-size: 0.75rem;
-  opacity: 0.7;
-  margin: 0.5rem 0 0;
-}
-.eo-list input,
-.eo-list select,
-.eo-detail input,
-.eo-detail select,
-/* The operand picker is a SearchableSelect, not an <input>; sized by the same
-   rule as its neighbours so "the same box" is true by construction rather than
-   by two numbers that happen to agree. */
-.eo-detail :deep(.ss-value),
-.eo-detail :deep(.ss-search) {
-  width: 100%;
-  height: 1.75rem;
-  box-sizing: border-box;
-  padding: 0 0.4rem;
-  font-size: 0.78rem;
-  color: inherit;
-  background: var(--p-content-background, #1b1b1b);
-  border: 1px solid var(--p-content-border-color, #3a3a3a);
-  border-radius: 4px;
-}
-.eo-list input:focus,
-.eo-list select:focus,
-.eo-detail input:focus,
-.eo-detail select:focus,
-.eo-detail :deep(.ss-value):focus,
-.eo-detail :deep(.ss-search):focus {
-  outline: none;
-  border-color: var(--p-primary-color, #5b9bd5);
-  box-shadow: 0 0 0 2px rgba(91, 155, 213, 0.2);
-}
 .eo-count {
   margin-right: auto;
-  font-size: 0.78rem;
-  opacity: 0.6;
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+.eo-blocked {
+  font-size: 0.8rem;
+  color: var(--p-red-500, #ef4444);
 }
 </style>

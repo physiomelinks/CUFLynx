@@ -415,3 +415,16 @@ def test_a_ca_crash_does_not_block_the_upload(monkeypatch):
 
     monkeypatch.setattr(obs_mod, "_ca_parser", lambda: _Boom())
     assert obs_mod.ca_schema_error(_obs()) is None
+
+
+def test_the_editor_reads_the_study_s_obs_data_whole(client):
+    """Every key comes back, those CUFLynx does not read (prediction_plots, a note) too, so
+    the editor writes back what it was given."""
+    model_id = upload_model(client, LV_MODEL_PATH)["model_id"]
+    assert client.get("/api/obs_data/document", params={"model_id": model_id}).json() == {
+        "document": None}
+    obs = {**json.loads(LV_OBS_DATA_PATH.read_text()), "prediction_plots": [], "note": "kept"}
+    assert client.post("/api/obs_data/upload",
+                       json={"model_id": model_id, "obs_data": obs}).status_code == 200
+    r = client.get("/api/obs_data/document", params={"model_id": model_id})
+    assert r.status_code == 200 and r.json()["document"] == obs

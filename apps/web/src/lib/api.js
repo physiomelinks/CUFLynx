@@ -23,6 +23,8 @@ export function errorMessage(e) {
   const data = res?.data
   const detail = typeof data === 'string' ? data : data?.detail
   if (typeof detail === 'string' && detail.trim()) return detail
+  // A refusal that carries more than its message (a workflow step's unset parameters).
+  if (typeof detail?.message === 'string' && detail.message.trim()) return detail.message
   // 422s from FastAPI validation arrive as a list of {loc, msg} objects.
   if (Array.isArray(detail) && detail.length) {
     return detail.map((d) => d?.msg || JSON.stringify(d)).join('; ')
@@ -87,6 +89,8 @@ export async function setConfig(opts = {}) {
     if (opts.seed !== undefined) body.seed = opts.seed
     // Where "Edit" sends a study: a URL sets it, '' restores production PhLynx.
     if (opts.phlynxUrl != null) body.phlynx_url = opts.phlynxUrl
+    // Module libraries a calibration workflow's library modules are found in; [] clears.
+    if (opts.moduleLibraryDirs != null) body.module_library_dirs = opts.moduleLibraryDirs
   }
   const { data } = await axios.post(url('/api/config'), body)
   return data
@@ -316,6 +320,20 @@ export async function uploadObsData(modelId, obsData, save = null) {
     { params: save?.filename ? { filename: save.filename, output_dir: save.outputsDir || '' } : {} },
   )
   return data
+}
+
+/** The study's obs_data as its file holds it, every key (null when it has none). */
+export async function getObsDataDocument(modelId) {
+  const { data } = await axios.get(url('/api/obs_data/document'), { params: { model_id: modelId } })
+  return data.document
+}
+
+/**
+ * A workflow step's unset parameters, from a refusal ({step_id, names}), or null: the
+ * parameters nothing gives a value, which a protocol in the step's obs_data sets.
+ */
+export function unsetParameters(e) {
+  return e?.response?.data?.detail?.unset_parameters ?? null
 }
 
 // Operation (obs_funcs) + cost_type (cost_func) option lists, sourced from
@@ -594,6 +612,18 @@ export async function openStudyFromOutputs(dir, runDir = null, filePrefix = null
   return data
 }
 
+/**
+ * Which outputs directory a dropped `<study>_cuflynx_study.json` opens. `text` is
+ * the file's contents; `path` is its location when the shell knows it (a browser
+ * drop does not, and the manifest's own `study_dir` answers instead).
+ */
+export async function openStudyManifest(text, path) {
+  const body = { content: text }
+  if (path) body.path = path
+  const { data } = await axios.post(url('/api/outputs/manifest'), body)
+  return data
+}
+
 export async function loadOutputsDirectory(dir, filePrefix, runDir) {
   const params = new URLSearchParams({ dir })
   if (filePrefix) params.set('file_prefix', filePrefix)
@@ -630,5 +660,100 @@ export async function exportPipeline(payload) {
 
 export async function exportPlotting(payload) {
   const { data } = await axios.post(url('/api/export/plotting'), payload)
+  return data
+}
+
+// --- Calibration workflows (circulatory_autogen's libcuflynx.calibration_workflow) ---
+
+/** The open workflow: its file, which parameter of each step lands where, each step's state. */
+export async function getWorkflow() {
+  const { data } = await axios.get(url('/api/workflow'))
+  return data
+}
+
+/** Open a calibration_workflow.json by path, or reopen a workflow run directory. */
+export async function loadWorkflow({ path = '', runDir = '', outputsDir = '' } = {}) {
+  const { data } = await axios.post(url('/api/workflow/load'), {
+    path,
+    run_dir: runDir,
+    config_outputs_dir: outputsDir,
+  })
+  return data
+}
+
+/** Open an uploaded calibration_workflow.json (a browser cannot name its path). */
+export async function uploadWorkflow(file, outputsDir = '') {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await axios.post(url('/api/workflow/upload'), form, {
+    params: outputsDir ? { config_outputs_dir: outputsDir } : {},
+  })
+  return data
+}
+
+export async function closeWorkflow() {
+  const { data } = await axios.post(url('/api/workflow/close'))
+  return data
+}
+
+/**
+ * One tab of the workflow -- a step id, or 'target' -- as a study: the same response a
+ * dropped .omex gives, plus `workflow_view` (fixed values, own results, what it waits for).
+ */
+export async function openWorkflowView(view) {
+  const { data } = await axios.post(url('/api/workflow/view'), { view })
+  return data
+}
+
+/** A workflow step's obs_data or params_for_id as the workflow names it: {path, content}. */
+export async function getWorkflowStepInput(stepId, role) {
+  const { data } = await axios.get(url('/api/workflow/step_input'), {
+    params: { step_id: stepId, role },
+  })
+  return data
+}
+
+/**
+ * Write a workflow step's obs_data (an object) or params_for_id (JSON, or CSV text the
+ * server converts to JSON); a step naming
+ * none is given a file. Returns {path, workflow}: the workflow described again.
+ */
+export async function saveWorkflowStepInput(stepId, role, content) {
+  const { data } = await axios.post(url('/api/workflow/step_input'), {
+    step_id: stepId,
+    role,
+    content: typeof content === 'string' ? content : JSON.stringify(content, null, 2),
+  })
+  return data
+}
+
+export async function runWorkflow({ fromStep = '', only = '', numCores = 1 } = {}) {
+  const { data } = await axios.post(url('/api/workflow/run'), {
+    from_step: fromStep,
+    only,
+    num_cores: numCores,
+  })
+  return data
+}
+
+export async function getWorkflowStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/workflow/${encodeURIComponent(jobId)}/status?offset=${offset}`),
+  )
+  return data
+}
+
+/**
+ * The open workflow as a COMBINE archive that reruns it: the target model, the workflow
+ * packed by CA (every step's files and the modules it uses, no results) and a study
+ * manifest naming it. Returns `{filename, download_url, member_count}`, for a link.
+ */
+export async function exportWorkflow(outputDir = '') {
+  const { data } = await axios.post(url('/api/workflow/export'), { output_dir: outputDir })
+  return data
+}
+
+export async function cancelWorkflow(jobId) {
+  const { data } = await axios.post(url(`/api/workflow/${encodeURIComponent(jobId)}/cancel`))
   return data
 }

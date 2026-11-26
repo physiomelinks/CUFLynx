@@ -261,9 +261,8 @@ const canGoBack = computed(() => {
 // resolves against *that ancestor*, and PrimeVue portals every dialog to
 // document.body, so targets like [data-testid="edit-obs"] live outside #app.
 //
-// ProtocolInfoEditor's `editorBounds()` ancestor walk is deliberately NOT
-// copied for *placing the bubble*: teleported to <body> there is no clipping
-// ancestor to fit the bubble inside, only the viewport.
+// The bubble is placed against the viewport, not a clipping ancestor:
+// teleported to <body> there is no clipping ancestor to fit it inside.
 //
 // The ring is the opposite case, and needs exactly that walk -- see `clipped`.
 
@@ -354,8 +353,7 @@ function reposition() {
   dim.value = !(el.closest && el.closest('.p-dialog'))
   // Place with whatever the bubble measures now (zero on the very first
   // render, since v-if has not produced it yet), then refine on the next
-  // frame once it has its real size -- the clear/measure/shift dance from
-  // ProtocolInfoEditor.fitEditor. The bubble is placed against the *clipped*
+  // frame once it has its real size (clear, measure, shift). The bubble is placed against the *clipped*
   // box, so it points at the visible part rather than at an edge off-pane.
   place(r)
   if (typeof requestAnimationFrame === 'function') {

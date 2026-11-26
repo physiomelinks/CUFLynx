@@ -455,7 +455,12 @@ def test_a_study_that_never_came_from_an_archive_can_still_be_sent(client):
     import base64
 
     members = _read(base64.b64decode(resp.json()["base64"]))
-    assert set(members) == {"manifest.xml", "model.cellml"}
+    # The model, plus the study manifest carrying the solver settings it is solved with
+    # (no funcs: this study has none).
+    assert set(members) == {"manifest.xml", "model.cellml", "lv_cuflynx_study.json"}
+    study = json.loads(members["lv_cuflynx_study.json"])
+    assert study["model"] == "model.cellml"
+    assert "dt" in study["solver_info"] and "user_funcs" not in study
 
 
 def test_the_archive_survives_losing_the_in_memory_registry(client):
