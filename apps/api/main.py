@@ -5359,6 +5359,15 @@ class WorkflowCombineRequest(BaseModel):
     method: str = "best_fit"
 
 
+class WorkflowFigureRequest(BaseModel):
+    draft: str
+    #: ``<script>:<function>``, the script relative to the workflow file
+    function: str
+    #: {parameter: {kind, step}}
+    inputs: dict = {}
+    description: str = ""
+
+
 def _layout_edit(fn, *args, **kwargs) -> dict:
     """Run a workflow_layout change on the open workflow; the Workflow view's description."""
     import workflow_layout  # noqa: PLC0415
@@ -5470,6 +5479,27 @@ def workflow_combine(req: WorkflowCombineRequest) -> dict:
     """Make a Choose a parameter set by cost action box a combine step of the steps drawn
     into it (CA's ``kind: combine``), checked by CA. The workflow's Run runs it."""
     return _layout_edit("make_combine", req.draft, req.method)
+
+
+@app.get("/api/workflow/figure_functions")
+def workflow_figure_functions() -> dict:
+    """What a figure action box can draw: libcuflynx's standard figures and the scripts beside
+    the workflow, and CA's input kinds (``workflow_layout.figure_functions``)."""
+    import workflow_layout  # noqa: PLC0415
+
+    path = _editable_workflow()
+    try:
+        return workflow_layout.figure_functions(path)
+    except (ImportError, AttributeError) as exc:
+        raise HTTPException(status_code=422,
+                            detail=f"this libcuflynx has no figure steps: {exc}") from exc
+
+
+@app.post("/api/workflow/figure_step")
+def workflow_figure(req: WorkflowFigureRequest) -> dict:
+    """Make a figure action box CA's figure step: a function and the step each of its
+    parameters reads, checked by CA (script included). The workflow's Run draws it."""
+    return _layout_edit("make_figure", req.draft, req.function, req.inputs, req.description)
 
 
 @app.post("/api/workflow/draft/delete")

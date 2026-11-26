@@ -71,11 +71,25 @@ describe('WorkflowStepPrep', () => {
     // an action this CA cannot make does not drag
     await actions.trigger('click')
     expect(prep.find('[data-testid="workflow-prep-option-action:combine"]').attributes('draggable')).toBe('false')
+    // nor a figure box, without CA's figure step
+    expect(prep.find('[data-testid="workflow-prep-option-action:figure"]').classes()).toContain('off')
     // Escape closes an open drop-down
     await models.trigger('click')
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await prep.vm.$nextTick()
     expect(prep.find('[data-testid="workflow-prep-models-list"]').exists()).toBe(false)
+    prep.unmount()
+  })
+
+  it('offers a Draw figures box where CA has the figure step', async () => {
+    const prep = mount(WorkflowStepPrep, { props: { workflow: { target: 'm.cellml', steps: [] },
+      stepKinds: ['calibration', 'figure'] }, attachTo: document.body })
+    await prep.find('[data-testid="workflow-prep-actions"]').trigger('click')
+    const figure = prep.find('[data-testid="workflow-prep-option-action:figure"]')
+    expect(figure.classes()).not.toContain('off')
+    await figure.trigger('click')
+    await prep.find('[data-testid="workflow-prep-place"]').trigger('click')
+    expect(prep.emitted('place')).toEqual([[{ action: 'figure' }]])
     prep.unmount()
   })
 })

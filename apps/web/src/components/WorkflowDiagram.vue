@@ -206,6 +206,7 @@ function draftWords(step) {
   if (step.draftModel) return [modelShort(step.draftModel), 'model box · click: choose what it does']
   if (step.action === 'set') return ['Set values by hand: click to give them', 'not set up · set by hand']
   if (step.action === 'combine') return ['Choose a parameter set by cost', 'not set up · draw calibrations to it']
+  if (step.action === 'figure') return ['Draw figures: click to choose them', 'not set up · figure']
   return ['New step: run a panel to make it', 'not run · its kind is what you run']
 }
 // the steps after the target: those run on it (`on_target`), and the figure steps that read

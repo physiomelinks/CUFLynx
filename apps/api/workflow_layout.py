@@ -112,8 +112,9 @@ def set_positions(workflow_path: str, positions: dict) -> dict:
 
 #: The boxes of the step prep box's Actions: steps on no model, each made by its own form.
 #: ``set``: values set by hand; ``combine``: a parameter set chosen from several
-#: calibrations by cost (only where CA has the kind).
-ACTIONS = ("set", "combine")
+#: calibrations by cost; ``figure``: figures drawn from other steps' results (the last two
+#: only where CA has the kind).
+ACTIONS = ("set", "combine", "figure")
 
 
 def add_draft(workflow_path: str, col: int | None = None, row: float | None = None,
@@ -342,6 +343,116 @@ def make_combine(workflow_path: str, draft: str, method: str = "best_fit") -> st
     layout["drafts"] = [d for d in layout["drafts"] if d.get("id") != draft]
     layout["links"] = [k for k in layout["links"]
                        if not (k["target"] == draft and k["key"] == "combine_from")]
+    write(workflow_path, layout)
+    apply_pending(workflow_path)
+    return draft
+
+
+#: Where a figure script beside the workflow lives, and where the standard figures are copied.
+FIGURE_SCRIPTS_DIR = "figures"
+
+
+def _figure_functions_of(path: str) -> list:
+    """The figure functions a script defines, read without importing it (as CA's
+    ``check_script`` reads it): every public top-level function taking ``out_dir`` and no
+    ``*args``/``**kwargs``, as ``{name, parameters, doc}`` (parameters without ``out_dir``,
+    doc the first paragraph of its docstring). None when the script has no ``main``, which CA
+    requires of a figure script."""
+    import ast  # noqa: PLC0415
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read(), filename=path)
+    except (OSError, SyntaxError, ValueError):
+        return []
+    functions = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
+    if not any(f.name == "main" for f in functions):
+        return []
+    out = []
+    for f in functions:
+        args = f.args
+        names = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
+        if f.name.startswith("_") or args.vararg or args.kwarg or "out_dir" not in names:
+            continue
+        doc = (ast.get_docstring(f) or "").split("\n\n")[0].replace("``", "")
+        out.append({"name": f.name, "parameters": [n for n in names if n != "out_dir"],
+                    "doc": " ".join(doc.split())})
+    return out
+
+
+def figure_functions(workflow_path: str) -> dict:
+    """What a figure action box can draw, for its form.
+
+    ``functions``: ``[{function, script, standard, name, parameters, doc}]``, ``function``
+    as the step writes it (``<script>:<name>``, the script relative to the workflow file):
+    libcuflynx's standard figures (the copy beside the workflow when there is one, which is
+    what a step runs, else libcuflynx's own, copied when a step first names it), then every
+    other script under ``figures/`` or named by a figure step. ``kinds``: CA's input kinds,
+    ``{name: {step_kinds, description}}``."""
+    figures = ca_import("calibration_workflow.figures")
+    base = os.path.dirname(os.path.abspath(workflow_path))
+    standard = f"{FIGURE_SCRIPTS_DIR}/{figures.STANDARD_FIGURES}"
+    scripts = [standard]
+    named = [str(s.get("function") or "").rpartition(":")[0]
+             for s in study_workflow.read_raw(workflow_path).get("steps") or []
+             if s.get("kind") == "figure"]
+    here = os.path.join(base, FIGURE_SCRIPTS_DIR)
+    local = sorted(f"{FIGURE_SCRIPTS_DIR}/{n}" for n in (os.listdir(here) if os.path.isdir(here)
+                                                          else []) if n.endswith(".py"))
+    for rel in named + local:
+        rel = os.path.relpath(os.path.normpath(os.path.join(base, rel)), base).replace(os.sep, "/")
+        if rel and rel not in scripts:
+            scripts.append(rel)
+    out = []
+    for rel in scripts:
+        path = os.path.join(base, rel)
+        if rel == standard and not os.path.isfile(path):
+            path = os.path.join(os.path.dirname(os.path.abspath(figures.__file__)),
+                                figures.STANDARD_FIGURES)
+        for f in _figure_functions_of(path):
+            out.append({"function": f"{rel}:{f['name']}", "script": rel,
+                        "standard": rel == standard, **f})
+    kinds = {name: {"step_kinds": list(k.step_kinds), "description": k.description}
+             for name, k in figures.INPUT_KINDS.items()}
+    return {"functions": out, "kinds": kinds}
+
+
+def make_figure(workflow_path: str, draft: str, function: str, inputs: dict,
+                description: str | None = None) -> str:
+    """Make the action box ``draft`` a figure step (CA's ``kind: figure``): ``function``
+    (``<script>:<name>``, the script relative to the workflow file) called with one input per
+    parameter, ``inputs`` ``{parameter: {"kind": <input kind>, "step": <step id>}}``. A
+    standard figure's script is copied beside the workflow first (libcuflynx's
+    ``write_standard_figures``; an existing copy is kept), so it is hashed and packed with the
+    workflow. Checked by CA, script included. Returns the step id (the draft's)."""
+    layout = read(workflow_path)
+    if not any(d.get("id") == draft for d in layout["drafts"]):
+        raise StudyWorkflowError(f"there is no new step {draft!r}")
+    script, _, name = str(function or "").rpartition(":")
+    if not script or not name:
+        raise StudyWorkflowError("choose the figure to draw")
+    given = {}
+    for param, source in (inputs or {}).items():
+        kind, step = (source or {}).get("kind"), (source or {}).get("step")
+        if not kind or not step:
+            raise StudyWorkflowError(f"{param}: choose the step it reads and what it reads")
+        given[param] = {str(kind): str(step)}
+    figures = ca_import("calibration_workflow.figures")
+    base = os.path.dirname(os.path.abspath(workflow_path))
+    if script == f"{FIGURE_SCRIPTS_DIR}/{figures.STANDARD_FIGURES}":
+        figures.write_standard_figures(os.path.join(base, FIGURE_SCRIPTS_DIR))
+    raw = copy.deepcopy(study_workflow.read_raw(workflow_path))
+    step = {"id": draft, "kind": "figure", "function": f"{script}:{name}", "inputs": given}
+    if str(description or "").strip():
+        step["description"] = str(description).strip()
+    raw.setdefault("steps", []).append(step)
+    parsed = study_workflow._checked(raw, workflow_path)
+    try:
+        figures.check_script(parsed.step(draft))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise StudyWorkflowError(str(exc)) from exc
+    _write_checked(workflow_path, raw)
+    layout["drafts"] = [d for d in layout["drafts"] if d.get("id") != draft]
     write(workflow_path, layout)
     apply_pending(workflow_path)
     return draft

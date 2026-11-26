@@ -72,6 +72,7 @@ import {
   openStudyFromOutputs,
   getWorkflowStepInput,
   workflowReductionCandidates,
+  workflowFigureFunctions,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -708,6 +709,8 @@ const workflowEditor = {
   setValues: (form) => wf.setValues(form),
   setValueOrigin: (form) => wf.setValueOrigin(form),
   combine: (form) => wf.combine(form),
+  makeFigure: (form) => wf.makeFigure(form),
+  figureFunctions: () => workflowFigureFunctions(),
   // a reduction chosen by hand keeps entries of the study's params_for_id
   chooseParameters: (form) => wf.chooseParameters({ ...form, modelId: model.modelId.value }),
   reductionCandidates: () => workflowReductionCandidates(model.modelId.value),
