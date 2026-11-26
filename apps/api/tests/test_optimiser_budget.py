@@ -11,6 +11,7 @@ import pytest
 import export_pipeline
 import optimiser_budget
 import sensitivity_runner
+import uq_runner
 from conftest import set_ca_module
 
 # A GA schema with numbers unlike CA's real ones, so a test cannot pass by
@@ -109,3 +110,15 @@ def test_calibrate_first_falls_back_to_one_population(monkeypatch, fake_schema):
         monkeypatch, {"param_id_method": "genetic_algorithm", "num_calls_to_function": None}) == (27, False)
     assert _calibrate_first_budget(
         monkeypatch, {"param_id_method": "genetic_algorithm", "num_calls_to_function": 300}) == (300, False)
+
+
+def test_uq_calibrate_first_falls_back_to_one_population(fake_schema):
+    """The UQ runner's calibrate-first search (and the profile likelihood's
+    re-calibrations, which take its optimiser_options) gets the same fallback."""
+    def budget(**settings):
+        return uq_runner._optimiser_options(settings)["num_calls_to_function"]
+
+    assert budget() == 27
+    assert budget(num_calls_to_function=None, max_patience=None, cost_convergence=None) == 27
+    assert budget(DEBUG=True) == 8
+    assert budget(num_calls_to_function=300) == 300
