@@ -47,7 +47,7 @@ The backend (libcuflynx) is located at [Circulatory Autogen](https://github.com/
 Not sure which Mac? **Apple menu -> About This Mac**: "Apple M…" is Apple silicon,
 "Intel…" is Intel. Every M-series chip runs the same `arm64` build.
 
-Take the plain Linux build unless you want the **Emulator** tab or **pyMC** sampling:
+Take the plain Linux build unless you want the **Surrogate** tab or **pyMC** sampling:
 those need torch, which is why they are a separate 645 MB download. 
 The two are otherwise identical, and there is no full build for macOS or
 Windows yet. To run with full emulator functionality on mac or windows 
@@ -143,7 +143,7 @@ pip install "libcuflynx[emulation]"
 ```
 
 None of that applies if you take the **`CUFLynx-linux-x86_64-full`** download listed
-above: it has both built in, so the Emulator tab and pyMC sampling work with no
+above: it has both built in, so the Surrogate tab and pyMC sampling work with no
 interpreter to pick and nothing to install. It is about 645 MB rather than 295 MB,
 which is why it is a separate file rather than the default. Everything else is
 identical to `CUFLynx-linux-x86_64`; there is no full build for macOS or Windows.

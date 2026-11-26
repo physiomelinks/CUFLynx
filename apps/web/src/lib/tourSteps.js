@@ -338,7 +338,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'emulator-tab',
     target: '[data-testid="tab-emulator"]',
     side: 'right',
-    title: 'Emulator',
+    title: 'Surrogate',
     text: 'Click the tab.',
     when: (ctx) => ctx.leftTab() !== 'emulator',
     advanceOn: { event: 'click' },

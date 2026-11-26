@@ -23,6 +23,7 @@ os.environ["CUFLYNX_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cuflynx-test-config-
 
 import calibration as calibration_mod  # noqa: E402
 import emulator as emulator_mod  # noqa: E402
+import rom as rom_mod  # noqa: E402
 import engine as engine_mod  # noqa: E402
 import main  # noqa: E402
 import model_codegen as model_codegen_mod  # noqa: E402
@@ -292,6 +293,7 @@ def _analysis_pythons() -> tuple:
         sensitivity_mod.sensitivity.python,
         uq_mod.uq.python,
         emulator_mod.emulator.python,
+        rom_mod.rom.python,
         engine_mod.engine.worker_python,
     )
 
@@ -302,6 +304,7 @@ def _set_analysis_pythons(pythons: tuple) -> None:
         sensitivity_mod.sensitivity.python,
         uq_mod.uq.python,
         emulator_mod.emulator.python,
+        rom_mod.rom.python,
         engine_mod.engine.worker_python,
     ) = pythons
 
@@ -334,6 +337,8 @@ def reset_app_state():
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
+    rom_mod.rom.reset()
+    rom_mod.rom.runner_path = rom_mod.RUNNER_PATH
     yield
     main._models.clear()
     engine_mod.engine.reset()
@@ -346,6 +351,8 @@ def reset_app_state():
     sensitivity_mod.sensitivity.runner_path = sensitivity_mod.RUNNER_PATH
     uq_mod.uq.reset()
     uq_mod.uq.runner_path = uq_mod.RUNNER_PATH
+    rom_mod.rom.reset()
+    rom_mod.rom.runner_path = rom_mod.RUNNER_PATH
     _set_analysis_pythons(_pythons_before)
     main._analysis_seed = None
     # Restore CIRCULATORY_AUTOGEN_SRC so a /api/config test doesn't leak.

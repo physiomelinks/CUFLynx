@@ -107,6 +107,8 @@ for runner in (
     "emulator_config.py",
     # Training the emulator itself.
     "emulator_runner.py",
+    # Reduced-order models (the Surrogate tab's ROM section), through libcuflynx's `cuflynx-rom setup`.
+    "rom_runner.py",
 ):
     datas.append((str(API_DIR / runner), "runners"))
 
