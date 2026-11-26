@@ -29,16 +29,24 @@ export function defaultRange(initialValue) {
  */
 export function mergedRows(currentParams = [], modelVariables = {}) {
   const initials = modelVariables.initial_values || {}
+  // Keyed by qname, except a modifier, which is keyed by its name: its qname is
+  // its first target's, and that target has a row of its own.
   const byQname = new Map()
-  // Members of a loaded group, so the model-parameter pass below doesn't offer
-  // them again as separate rows — they already belong to a row (#193).
-  const claimed = new Set()
+  // Variables a loaded group or modifier drives: each gets a hidden row owned by
+  // that entry, as the editor's own Group / Create modifier leave them, so
+  // Ungroup and deleting the modifier give them back (#193, #208).
+  const owned = []
 
   for (const p of currentParams) {
     const qnames = p.qnames?.length ? [...p.qnames] : [p.qname]
-    for (const q of qnames) claimed.add(q)
     const isModifier = !!(p.modifies?.length)
-    byQname.set(p.qname, {
+    const name = p.name ?? p.qname
+    if (isModifier) {
+      for (const q of qnames) owned.push({ qname: q, modifiedBy: name, baseline: p.baselines?.[q] })
+    } else {
+      for (const q of qnames.slice(1)) owned.push({ qname: q, groupedInto: p.qname })
+    }
+    byQname.set(isModifier ? `mod:${name}` : p.qname, {
       qname: p.qname,
       // Every variable this row drives, `qname` first. One entry for an ordinary
       // row, so nothing downstream has to ask whether a row is a group. For a
@@ -55,7 +63,7 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
       included: true,
       // The entry's identity (CA enforces uniqueness across the file); the
       // handle a modifier is referenced and labelled by.
-      name: p.name ?? p.qname,
+      name,
       kind: isModifier ? 'modifier' : 'free',
       operation: p.operation ?? null,
       // The model constants the modifier function declares as inputs, as this
@@ -85,38 +93,53 @@ export function mergedRows(currentParams = [], modelVariables = {}) {
     })
   }
 
-  for (const qname of modelVariables.params || []) {
-    if (byQname.has(qname) || claimed.has(qname)) continue
-    const iv = initials[qname] ?? null
-    const { min, max } = defaultRange(iv)
-    byQname.set(qname, {
-      qname,
-      qnames: [qname],
-      groupedInto: null,
-      modifiedBy: null,
-      selected: false,
-      included: false,
-      name: qname,
-      kind: 'free',
-      operation: null,
-      inputs: null,
-      baselines: null,
-      min,
-      max,
-      name_for_plotting: qname,
-      param_type: null,
-      initial_value: iv,
-      comment: '',
-      prior: '',
-      priorParams: {},
-      unbounded: false,
+  for (const o of owned) {
+    if (byQname.has(o.qname)) continue
+    byQname.set(o.qname, {
+      ...modelParamRow(o.qname, initials[o.qname] ?? o.baseline ?? null),
+      groupedInto: o.groupedInto ?? null,
+      modifiedBy: o.modifiedBy ?? null,
+      // In play while owned, so it is saved once its owner lets it go.
+      included: true,
     })
+  }
+
+  for (const qname of modelVariables.params || []) {
+    if (byQname.has(qname)) continue
+    byQname.set(qname, modelParamRow(qname, initials[qname] ?? null))
   }
 
   return [...byQname.values()].sort((a, b) => {
     if (a.included !== b.included) return a.included ? -1 : 1
     return a.qname.localeCompare(b.qname)
   })
+}
+
+/** A row for a model parameter no loaded entry names: unticked, ±10% range. */
+function modelParamRow(qname, iv) {
+  const { min, max } = defaultRange(iv)
+  return {
+    qname,
+    qnames: [qname],
+    groupedInto: null,
+    modifiedBy: null,
+    selected: false,
+    included: false,
+    name: qname,
+    kind: 'free',
+    operation: null,
+    inputs: null,
+    baselines: null,
+    min,
+    max,
+    name_for_plotting: qname,
+    param_type: null,
+    initial_value: iv,
+    comment: '',
+    prior: '',
+    priorParams: {},
+    unbounded: false,
+  }
 }
 
 /** Split a `vessel/param` qname on the LAST slash (param_name has no slash). */

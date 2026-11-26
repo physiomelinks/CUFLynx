@@ -12,7 +12,7 @@ import pytest
 
 import omex_export
 import phlynx_components
-from calibrated_model import calibrated_cellml
+from calibrated_cellml import calibrated_cellml
 from cellml_meta import parse_cellml
 from params_for_id import parse_params_for_id
 

@@ -36,7 +36,7 @@ export function useObsData() {
       obsData.value?.protocol_info != null,
   )
 
-  /** The protocol document itself, or null for a data-only (or absent) obs_data. */
+  /** The protocol document itself, or null when no obs_data is loaded. */
   const protocolInfo = computed(() => obsData.value?.protocol_info ?? null)
 
   /**
