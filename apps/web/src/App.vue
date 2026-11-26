@@ -1842,7 +1842,7 @@ const exportEnabled = computed(() => ({
   do_simulation: true,
   do_calibration: canCalibrate.value,
   do_sensitivity: canCalibrate.value,
-  do_mcmc: canCalibrate.value && uqSettings.value.method === 'mcmc',
+  do_uq: canCalibrate.value && uqSettings.value.method === 'mcmc',
   do_ia: canCalibrate.value && uqSettings.value.method === 'laplace',
 }))
 
@@ -3583,12 +3583,13 @@ watch(() => obs.obsData.value, scheduleRun)
             :data-testid="`solver-info-${f.key}`"
             @update:model-value="applyBackendSolver"
           />
+          <!-- An unset field (seed: false) shows its default until the user changes it. -->
           <Checkbox
             v-else-if="f.type === 'bool'"
-            v-model="solverInfo[f.key]"
+            :model-value="solverInfo[f.key] ?? f.default"
             :binary="true"
             :data-testid="`solver-info-${f.key}`"
-            @update:model-value="applyBackendSolver"
+            @update:model-value="(v) => { solverInfo[f.key] = v; applyBackendSolver() }"
           />
           <!--
             A free-form object (external_python's `user_config`, which CA hands
@@ -3606,8 +3607,8 @@ watch(() => obs.obsData.value, scheduleRun)
           <InputNumber
             v-else
             v-model="solverInfo[f.key]"
-            :min-fraction-digits="1"
-            :max-fraction-digits="12"
+            :min-fraction-digits="f.integer ? 0 : 1"
+            :max-fraction-digits="f.integer ? 0 : 12"
             size="small"
             :data-testid="`solver-info-${f.key}`"
             @update:model-value="applyBackendSolver"

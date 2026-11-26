@@ -292,6 +292,18 @@ describe('FileImport', () => {
     })
   })
 
+  it('takes a params_for_id .json, the form circulatory_autogen reads', async () => {
+    uploadParamsForId.mockResolvedValue({ params: [{ name: 'p' }] })
+    const wrapper = mount(FileImport, { props: { modelId: 'abc' }, global: { stubs } })
+    const doc = jsonFile('m_params_for_id.json', '{"version": 1, "params": []}')
+    const zone = wrapper.find('[data-testid="params-drop"]')
+    expect(zone.find('input[type="file"]').attributes('accept')).toContain('.json')
+    await zone.trigger('drop', { dataTransfer: { files: [doc] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-error"]').exists()).toBe(false)
+    expect(uploadParamsForId).toHaveBeenCalledWith(doc, 'abc')
+  })
+
   it('test_obs_drop_with_model_attaches_immediately', async () => {
     uploadObsData.mockResolvedValue({ model_id: 'abc' })
     const wrapper = mount(FileImport, { props: { modelId: 'abc' }, global: { stubs } })
