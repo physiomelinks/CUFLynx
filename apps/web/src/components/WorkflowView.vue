@@ -25,6 +25,7 @@ import WorkflowLinkEditor from './WorkflowLinkEditor.vue'
 import WorkflowStepPrep from './WorkflowStepPrep.vue'
 import WorkflowSetValuesForm from './WorkflowSetValuesForm.vue'
 import WorkflowCombineForm from './WorkflowCombineForm.vue'
+import WorkflowFigureForm from './WorkflowFigureForm.vue'
 import WorkflowChooseParamsForm from './WorkflowChooseParamsForm.vue'
 import WorkflowDraftChoice from './WorkflowDraftChoice.vue'
 import { modelShort } from '../lib/workflowTarget'
@@ -59,7 +60,8 @@ const props = defineProps({
   linkKinds: { type: Object, default: () => ({}) },
   fixedParameters: { type: Boolean, default: false },
   // The chart's edits (useWorkflow): {link, unlink, place, placeMany, addDraft, makeSweep,
-  // chooseDraft, deleteDraft}, each async; '' when done, else why not (addDraft: the id).
+  // makeFigure, chooseDraft, deleteDraft, ...}, each async; '' when done, else why not
+  // (addDraft: the id); figureFunctions: what a figure box can draw.
   editor: { type: Object, default: null },
   // The model's constants (component/name), offered when setting values by hand.
   parametersOffered: { type: Array, default: () => [] },
@@ -163,6 +165,8 @@ const setDraft = ref(null)
 const combineDraft = ref(null)
 const combineInputs = computed(() => (props.layout?.links ?? [])
   .filter((l) => l.target === combineDraft.value && l.key === 'combine_from').map((l) => l.source))
+// the Draw figures box whose form is open
+const figureDraft = ref(null)
 
 /** New step dropped on the chart: a box there (a new column in a gap, moving the boxes right
  * of it on); after the target, a simulation, whose form opens. A model box or an action box
@@ -186,6 +190,7 @@ function onSelectDraft(id) {
   if (d.model) choosing.value = d
   else if (d.action === 'set') setDraft.value = id
   else if (d.action === 'combine') combineDraft.value = id
+  else if (d.action === 'figure') figureDraft.value = id
   else props.editor?.chooseDraft(id)
 }
 
@@ -460,6 +465,14 @@ const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendin
           :save="(form) => editor ? editor.combine(form) : Promise.resolve('editing is not available')"
           :busy="busy || running"
           @close="combineDraft = null"
+        />
+        <WorkflowFigureForm
+          :draft="figureDraft"
+          :steps="steps"
+          :load="() => editor ? editor.figureFunctions() : Promise.reject(new Error('editing is not available'))"
+          :save="(form) => editor ? editor.makeFigure(form) : Promise.resolve('editing is not available')"
+          :busy="busy || running"
+          @close="figureDraft = null"
         />
         <WorkflowLinkEditor
           :arrow="editedArrow"

@@ -332,6 +332,59 @@ def test_an_action_box_sets_values_by_hand(client, fake_runs, tmp_path):
     assert r.status_code == 422
 
 
+def test_a_figure_action_box_draws_from_the_steps_its_form_names(client, fake_runs, tmp_path):
+    """A Draw figures box: its form lists libcuflynx's standard figures and the scripts
+    beside the workflow, with CA's input kinds; making it writes CA's figure step, the
+    standard script copied beside the workflow, and CA refuses an input the step cannot give
+    or a script whose function does not take the inputs given."""
+    work = tmp_path / "w"
+    model_id = _setup(client)
+    assert _calibrate(client, model_id, work)["state"] == "done"
+    r = client.post("/api/workflow/draft", json={"action": "figure"})
+    assert r.status_code == 200, r.text
+    if "figure" not in r.json()["step_kinds"]:
+        pytest.skip("this CA has no figure step (CA #705)")
+    draft = r.json()["draft"]
+    here = _workflow_dir(work)
+    (here / "figures").mkdir()
+    (here / "figures" / "mine.py").write_text(
+        "def draw(values, extra, out_dir):\n    return []\n\n\n"
+        "def _helper(out_dir):\n    pass\n\n\ndef main(argv=None):\n    pass\n")
+
+    listed = client.get("/api/workflow/figure_functions").json()
+    by_function = {f["function"]: f for f in listed["functions"]}
+    best = by_function["figures/standard_figures.py:best_fit"]
+    assert best["standard"] and best["parameters"] == ["fit"] and best["doc"]
+    assert by_function["figures/mine.py:draw"]["parameters"] == ["values", "extra"]
+    assert not by_function["figures/mine.py:draw"]["standard"]
+    assert "figures/mine.py:_helper" not in by_function
+    assert "calibration" in listed["kinds"]["best_fit"]["step_kinds"]
+
+    figure = {"draft": draft, "function": "figures/standard_figures.py:best_fit"}
+    r = client.post("/api/workflow/figure_step", json={**figure, "inputs": {"fit": {"kind": "best_fit"}}})
+    assert r.status_code == 422 and "choose the step" in r.json()["detail"]
+    r = client.post("/api/workflow/figure_step", json={
+        **figure, "inputs": {"fit": {"kind": "sensitivity", "step": "calibration-1"}}})
+    assert r.status_code == 422 and "sensitivity step" in r.json()["detail"]
+    r = client.post("/api/workflow/figure_step", json={
+        "draft": draft, "function": "figures/mine.py:draw",
+        "inputs": {"values": {"kind": "values", "step": "calibration-1"}}})
+    assert r.status_code == 422 and "parameters" in r.json()["detail"]
+    assert draft not in _steps(work)
+
+    r = client.post("/api/workflow/figure_step", json={
+        **figure, "inputs": {"fit": {"kind": "best_fit", "step": "calibration-1"}},
+        "description": "the fit"})
+    assert r.status_code == 200, r.text
+    assert _steps(work)[draft] == {"id": draft, "kind": "figure",
+                                   "function": "figures/standard_figures.py:best_fit",
+                                   "inputs": {"fit": {"best_fit": "calibration-1"}},
+                                   "description": "the fit"}
+    assert (here / "figures" / "standard_figures.py").is_file()
+    assert r.json()["layout"]["drafts"] == []
+    assert not r.json().get("plan_error")
+
+
 def test_an_action_box_combines_the_calibrations_drawn_into_it(client, fake_runs, tmp_path):
     """Two calibrations of one parameter that do not take from each other: CA will not
     merge both into the target (CA #685); a combine step drawn from both gives it one value."""

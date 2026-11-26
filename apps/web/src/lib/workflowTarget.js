@@ -307,7 +307,7 @@ export function layoutSteps(steps, positions = {}, pending = []) {
 }
 
 // The kinds of step only an action box makes (by its own form, never by a panel run).
-const ACTION_KINDS = ['set', 'combine']
+const ACTION_KINDS = ['set', 'combine', 'figure']
 
 /**
  * What an arrow from `source` to `target` can pass, by CA's rules (describe's link_kinds:

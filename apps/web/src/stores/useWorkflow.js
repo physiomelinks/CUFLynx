@@ -16,6 +16,7 @@ import {
   setWorkflowValues,
   setWorkflowValueOrigin,
   combineWorkflowSteps,
+  makeWorkflowFigure,
   chooseWorkflowParameters,
   addWorkflowDraft,
   buildWorkflowTabs,
@@ -622,6 +623,7 @@ export function useWorkflow(options = {}) {
   // where a value of the target comes from (the origin boxes' form)
   const setValueOrigin = (form) => layoutEdit(() => setWorkflowValueOrigin(form))
   const combine = (form) => layoutEdit(() => combineWorkflowSteps(form))
+  const makeFigure = (form) => layoutEdit(() => makeWorkflowFigure(form))
   const chooseParameters = (form) => layoutEdit(() => chooseWorkflowParameters(form))
 
   async function moveStep(stepId, index) {
@@ -657,6 +659,7 @@ export function useWorkflow(options = {}) {
     setValues,
     setValueOrigin,
     combine,
+    makeFigure,
     chooseParameters,
     described,
     loaded,

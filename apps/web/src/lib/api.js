@@ -1008,6 +1008,21 @@ export async function combineWorkflowSteps({ draft, method = 'best_fit' }) {
   return data
 }
 
+/** What a figure action box can draw: {functions: [{function, script, standard, name,
+ * parameters, doc}], kinds: {name: {step_kinds, description}}} (CA's input kinds). */
+export async function workflowFigureFunctions() {
+  const { data } = await axios.get(url('/api/workflow/figure_functions'))
+  return data
+}
+
+/** Make a figure action box CA's figure step: `function` (`<script>:<name>`) and per
+ * parameter the step it reads and the input kind ({param: {kind, step}}). */
+export async function makeWorkflowFigure({ draft, function: fn, inputs, description = '' }) {
+  const { data } = await axios.post(url('/api/workflow/figure_step'),
+    { draft, function: fn, inputs, description })
+  return data
+}
+
 /** The study's params_for_id entries a reduction chosen by hand can keep (CA's labels). */
 export async function workflowReductionCandidates(modelId) {
   const { data } = await axios.get(url('/api/workflow/reduction_candidates'), { params: { model_id: modelId } })

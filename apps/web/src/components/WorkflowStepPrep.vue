@@ -4,8 +4,8 @@
  * chart. Two drop-downs drawn as the boxes they give: Models, one box per model the
  * workflow uses (its target and every step's own; what a model box does is chosen by
  * clicking it on the chart), and Actions, boxes on no model, each made by its own form
- * (values set by hand; a parameter set chosen from several calibrations by cost, where CA
- * has it). The box chosen in a drop-down is the drop-down itself, and is dragged from there.
+ * (values set by hand; a parameter set chosen from several calibrations by cost, and figures
+ * drawn from other steps' results, where CA has them). The box chosen in a drop-down is the drop-down itself, and is dragged from there.
  *
  * A dragged box carries `{model}` or `{action}` as `application/x-cuflynx-new-step`, which
  * the chart (WorkflowDiagram) reads when it is dropped.
@@ -51,6 +51,9 @@ const ACTIONS = [
   { key: 'action:set', kind: 'set', title: 'Set values by hand',
     line: 'each value with the reason it was chosen', tag: 'action · set by hand',
     payload: { action: 'set' } },
+  { key: 'action:figure', kind: 'figure', title: 'Draw figures',
+    line: 'from the results of the steps it reads', tag: 'action · figure',
+    payload: { action: 'figure' } },
 ]
 const actions = computed(() => ACTIONS.map((a) => {
   const available = props.stepKinds.includes(a.kind)
