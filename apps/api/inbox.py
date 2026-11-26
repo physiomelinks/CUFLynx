@@ -39,6 +39,11 @@ PREFERRED_PORT = 8787
 #: discover.
 RECEIVE_PORTS = tuple(range(PREFERRED_PORT, PREFERRED_PORT + 5))
 
+#: The largest archive staged from any sender: a post from a page, or a download
+#: started by a ``cuflynx://`` link. Well above any real study, so an accidental
+#: or hostile multi-gigabyte payload cannot sit in this process's memory.
+MAX_DELIVERY_BYTES = 64 * 1024 * 1024
+
 
 @dataclass
 class PendingStudy:
@@ -75,6 +80,7 @@ class Inbox:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pending: PendingStudy | None = None
+        self._error: dict | None = None
 
     def deliver(self, data: bytes, origin: str, filename: str) -> dict:
         members = _member_names(data)
@@ -97,7 +103,24 @@ class Inbox:
         with self._lock:
             had = self._pending is not None
             self._pending = None
+            self._error = None
             return had
+
+    def report_error(self, origin: str, message: str) -> None:
+        """Record a delivery that failed before anything could be staged.
+
+        A ``cuflynx://`` link is fetched by the app, not posted by a page, so a
+        bad link or a failed download has no sender to answer: the UI shows this
+        instead, once (:meth:`take_error`).
+        """
+        with self._lock:
+            self._error = {"origin": origin, "message": message}
+
+    def take_error(self) -> dict | None:
+        """The last failed delivery, removed so it is shown once."""
+        with self._lock:
+            error, self._error = self._error, None
+            return error
 
 
 def _member_names(data: bytes) -> list[str]:

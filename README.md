@@ -101,6 +101,26 @@ PyInstaller packaging, not malware. Restore it and allow it, or download again.
 sensitivity and UQ all run out of the box.
 
 
+### Open a study from a web page
+
+A page can link straight to a COMBINE archive with
+`cuflynx://open?url=<percent-encoded https:, http: or file: URL of a .omex>` (the
+module library's HTML report does). The first time the downloaded app runs it
+registers itself for these links, for your user only:
+
+- **Linux**: `~/.local/share/applications/cuflynx-url-handler.desktop`, made the
+  `x-scheme-handler/cuflynx` default with `xdg-mime`.
+- **Windows**: `HKEY_CURRENT_USER\Software\Classes\cuflynx`.
+- **macOS**: a small helper app, `~/Applications/CUFLynx Link Handler.app`, that
+  passes each link to the CUFLynx executable.
+
+Move the executable and the next launch registers the new location. Clicking a
+link opens it in the CUFLynx already running, or starts one; CUFLynx downloads
+the archive and asks before loading it, naming where it came from. Run
+`CUFLynx --register-url-scheme` to register by hand (from source:
+`python apps/desktop/app.py --register-url-scheme`), and set
+`CUFLYNX_NO_URL_SCHEME=1` to stop the automatic registration.
+
 For the tutorial click 'Tutorial at the top right of the CUFLynx page.
 For more info, see **[Using CUFLynx](tutorials/docs/misc.md)** — solver backends, Myokit `.mmt`
 models, and replotting a run outside the app.
