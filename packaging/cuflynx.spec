@@ -86,19 +86,20 @@ for runner in (
     # The fields the runners read out of CA's parsed dicts. A leaf like ca_imports --
     # stdlib and ca_imports only -- so it ships with them for the same reason.
     "ca_obs.py",
+    # The unset calibration budget (one GA population), shared with the export.
+    "optimiser_budget.py",
     "local_sensitivity.py",
     # Every runner writes its results in circulatory_autogen's own formats and the
     # managers read them back from there (#210); this module is the one place that
     # knows those formats, so both sides need it.
     "ca_run_history.py",
-    # calibration_runner -> calibrated_model -> cellml_meta / params_for_id, to
+    # calibration_runner -> calibrated_cellml -> cellml_meta / params_for_id, to
     # save a calibrated CellML when a run finishes (issue #114).
-    "calibrated_model.py",
+    "calibrated_cellml.py",
     "cellml_meta.py",
     "params_for_id.py",
-    # An obs_data.json is an object *or* a bare array of data_items; uq_runner
-    # rewrites one (MLE cost_type) and reads its items through the single helper
-    # that knows both shapes, rather than assuming the object form.
+    # uq_runner rewrites an obs_data (MLE cost_type) and reads its items through
+    # obs_data's helper.
     "obs_data.py",
     # "use the emulator" -> CA engine kwargs, shared by all three analysis
     # runners so a study cannot be calibrated on a surrogate and analysed on the
@@ -638,6 +639,13 @@ _BASE_EXCLUDES = (
     # switch this one asset over to Cython's build_ext, making the most fragile runtime path
     # in the app behave differently in the bundle nobody builds locally.
     "Cython",
+    # Matlogica's AADC and aadc-ode are proprietary, binary-only and licensed to each
+    # user, so they are never bundled: a user installs them into the Python set in
+    # Settings -> Python (see apps/api/aadc_check.py). libcuflynx imports them lazily
+    # behind ImportError guards, but collect_submodules("libcuflynx") still makes
+    # PyInstaller trace those imports, so a build machine with them installed would ship them.
+    "aadc",
+    "aadc_ode",
 )
 
 # ...except that one of them is dead weight only in the ordinary bundles. autoemulate's
