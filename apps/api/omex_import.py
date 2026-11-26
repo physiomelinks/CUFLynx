@@ -26,12 +26,16 @@ that was not kept.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
+import posixpath
 import re
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+from cellml_flatten import CellMLFlattenError, pick_main_cellml
 
 # PhLynx's editor state, carried along so the archive round-trips through it.
 MODULE_CONFIG_NAME = "module_config.json"
@@ -123,18 +127,42 @@ def read_manifest(zf: zipfile.ZipFile) -> dict | None:
     return None
 
 
-def _master_from_manifest(entries: list[dict]) -> str | None:
-    """The location the manifest marks ``master="true"``, if any.
+def member_path(location: str) -> str:
+    """A manifest location as the archive member it names: ``./a/b`` -> ``a/b``."""
+    path = posixpath.normpath(location.strip())
+    return "" if path == "." else path
+
+
+def _sedml_model_source(sedml: bytes | None, location: str) -> str | None:
+    """The member the SED-ML's first ``<model source>`` names, or None."""
+    if not sedml:
+        return None
+    try:
+        root = ET.fromstring(sedml)
+    except ET.ParseError:
+        return None
+    for el in root.iter():
+        if el.tag.rsplit("}", 1)[-1] == "model" and el.get("source"):
+            return member_path(posixpath.join(posixpath.dirname(location), el.get("source")))
+    return None
+
+
+def _master_from_manifest(entries: list[dict], members: dict[str, bytes]) -> str | None:
+    """The model member the manifest's master leads to, if any.
 
     Which CellML is the main model is the one thing file names cannot tell you,
-    so this is the manifest's job. Everything else is classified by name.
+    so this is the manifest's job. A master model is taken as it is; a master
+    SED-ML (PhLynx marks its SED-ML master) leads to the model it runs.
     """
     for entry in entries:
         if not entry["master"]:
             continue
-        loc = entry["location"].lstrip("./")
+        loc = member_path(entry["location"])
         if loc.lower().endswith(MODEL_SUFFIXES):
             return loc
+        source = _sedml_model_source(members.get(loc), loc)
+        if source and source in members and source.lower().endswith(MODEL_SUFFIXES):
+            return source
     return None
 
 
@@ -385,20 +413,23 @@ def unpack(data: bytes) -> dict:
                 "to load."
             )
 
-        master = _master_from_manifest(entries)
         ordered = list(roles["cellml"])
+        master = _master_from_manifest(entries, members)
+        if not master and len(ordered) > 1:
+            # No manifest says: the root of the import graph, when there is one.
+            with contextlib.suppress(CellMLFlattenError):
+                master = pick_main_cellml({n: members[n] for n in ordered})
         if master:
-            # Compare on the basename: manifest locations are relative and may or
-            # may not carry a leading "./" or a directory prefix.
-            base = Path(master).name.lower()
-            ordered.sort(key=lambda n: Path(n).name.lower() != base)
+            ordered.sort(key=lambda n: n != master)
 
         def read_first(role_members):
             for m in role_members:
                 return Path(m).name, members[m]
             return None, None
 
-        cellml = {Path(n).name: members[n] for n in ordered}
+        # By archive path, not by name: an import href is a path, and a modular
+        # model imports its units from `units/`.
+        cellml = {n: members[n] for n in ordered}
         obs_name, obs_bytes = read_first(roles["obs"])
         params_name, params_bytes = read_first(roles["params"])
         cfg_name, cfg_bytes = read_first(roles["module_config"])
@@ -410,7 +441,7 @@ def unpack(data: bytes) -> dict:
 
     out = {
         "cellml": cellml,
-        "master": Path(ordered[0]).name if ordered else None,
+        "master": ordered[0] if ordered else None,
         "obs": (obs_name, obs_bytes) if obs_bytes is not None else None,
         "params": (params_name, params_bytes) if params_bytes is not None else None,
         "module_config": (cfg_name, cfg_bytes) if cfg_bytes is not None else None,

@@ -122,7 +122,7 @@ def outside_parameter_components(report: dict) -> list[str]:
 
 
 def _relative(location: str) -> str:
-    return location.lstrip("./")
+    return omex_import.member_path(location)
 
 
 def _entry_for(location: str, master: bool = False) -> dict:
@@ -210,10 +210,7 @@ def build_archive(
         # verbatim, and the flattening is why.
         for extra in parts["roles"]["cellml"][1:]:
             members.pop(extra, None)
-            base = Path(extra).name.lower()
-            entries = [
-                e for e in entries if Path(_relative(e["location"])).name.lower() != base
-            ]
+            entries = [e for e in entries if _relative(e["location"]) != extra]
         _replace_member(members, entries, model_member, model_member, new_cellml.encode("utf-8"))
         model_out = model_member
         # `master` is deliberately left exactly as the source manifest had it. A

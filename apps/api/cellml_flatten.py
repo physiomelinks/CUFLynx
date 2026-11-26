@@ -12,7 +12,9 @@ before saving -- exactly how circulatory_autogen does it in
 from __future__ import annotations
 
 import os
+import posixpath
 import re
+import tempfile
 from pathlib import Path
 
 # NB: libcellml is imported lazily inside flatten_cellml() -- it is only present
@@ -28,9 +30,18 @@ class CellMLFlattenError(Exception):
     """Raised when a multi-file CellML model cannot be resolved/flattened."""
 
 
-def imported_hrefs(cellml_bytes: bytes) -> set[str]:
-    """The (basename) sister files a CellML document imports."""
-    return {os.path.basename(h.decode("utf-8", "replace")) for h in _IMPORT_HREF.findall(cellml_bytes)}
+def imported_hrefs(cellml_bytes: bytes, location: str = "") -> set[str]:
+    """The files a CellML document imports, as paths relative to the bundle.
+
+    ``location`` is the document's own path in the bundle: an href is relative
+    to the file that holds it, so ``units/ticks.cellml`` imported from
+    ``model/main.cellml`` is ``model/units/ticks.cellml``.
+    """
+    folder = posixpath.dirname(location)
+    return {
+        posixpath.normpath(posixpath.join(folder, h.decode("utf-8", "replace")))
+        for h in _IMPORT_HREF.findall(cellml_bytes)
+    }
 
 
 def has_imports(cellml_bytes: bytes) -> bool:
@@ -38,7 +49,7 @@ def has_imports(cellml_bytes: bytes) -> bool:
 
 
 def pick_main_cellml(files: dict[str, bytes]) -> str:
-    """Choose the top-level model among an uploaded bundle.
+    """Choose the top-level model among a bundle keyed by relative path.
 
     The main file imports its sisters but is itself imported by none, so it is
     the root of the import graph. When several files import (a diamond/chain) the
@@ -48,11 +59,11 @@ def pick_main_cellml(files: dict[str, bytes]) -> str:
     if len(files) == 1:
         return next(iter(files))
     referenced: set[str] = set()
-    for data in files.values():
-        referenced |= imported_hrefs(data)
-    # Roots = uploaded files nobody imports. Prefer ones that themselves import
+    for name, data in files.items():
+        referenced |= imported_hrefs(data, name)
+    # Roots = files nobody imports. Prefer ones that themselves import
     # (a lone leaf with no imports isn't a model root).
-    roots = [name for name in files if os.path.basename(name) not in referenced]
+    roots = [name for name in files if posixpath.normpath(name) not in referenced]
     importing_roots = [name for name in roots if has_imports(files[name])]
     candidates = importing_roots or roots
     if len(candidates) == 1:
@@ -62,6 +73,24 @@ def pick_main_cellml(files: dict[str, bytes]) -> str:
         f"(candidates: {sorted(candidates) or sorted(files)}). Upload the main "
         "model together with exactly the sister files it imports."
     )
+
+
+def flatten_bundle(files: dict[str, bytes], main: str) -> str:
+    """Flatten ``main`` among ``files``, each written at its relative path.
+
+    The layout is kept because an href is a path: PhLynx's modular export
+    imports its units from ``units/``, which a bundle written by basename would
+    not have. A path that leads out of the bundle is refused.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        for name, data in files.items():
+            target = (root / name).resolve()
+            if root not in target.parents:
+                raise CellMLFlattenError(f"{name!r} lies outside the bundle")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        return flatten_cellml(str(root / main))
 
 
 def flatten_cellml(main_path: str, base_dir: str | None = None) -> str:

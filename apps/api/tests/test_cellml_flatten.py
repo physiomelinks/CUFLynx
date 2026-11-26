@@ -33,6 +33,25 @@ def test_pick_main_cellml_selects_the_import_root():
     assert cf.pick_main_cellml({"only.cellml": b"<model/>"}) == "only.cellml"
 
 
+def test_an_href_is_relative_to_the_file_that_holds_it():
+    """``units/u.cellml`` imported from ``model/main.cellml`` is
+    ``model/units/u.cellml``, not a top-level ``u.cellml``."""
+    bundle = {
+        "model/main.cellml": b'<model><import xlink:href="units/u.cellml"/></model>',
+        "model/units/u.cellml": b"<model/>",
+        "u.cellml": b"<model/>",
+    }
+    assert cf.imported_hrefs(bundle["model/main.cellml"], "model/main.cellml") == {
+        "model/units/u.cellml"
+    }
+    assert cf.pick_main_cellml(bundle) == "model/main.cellml"
+
+
+def test_a_bundle_path_outside_the_bundle_is_refused():
+    with pytest.raises(cf.CellMLFlattenError, match="outside the bundle"):
+        cf.flatten_bundle({"../escape.cellml": b"<model/>"}, "../escape.cellml")
+
+
 def test_flatten_produces_self_contained_cellml_2_0(requires_simulation):
     flat = cf.flatten_cellml(str(MAIN))
     assert "cellml/2.0" in flat  # libCellML's Printer always emits 2.0
