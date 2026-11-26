@@ -72,6 +72,18 @@ describe('solverConfig helpers', () => {
     }
     expect(defaultSolverInfo(o, 's')).toEqual({ vectorized: false, dense_output: true })
   })
+
+  it('leaves a seed: false field unset (casadi jit falls back only when unset)', () => {
+    const o = {
+      solver_info_schema: {
+        casadi_integrator: [
+          { key: 'reltol', type: 'number', default: 1e-8 },
+          { key: 'jit', type: 'bool', default: true, seed: false },
+        ],
+      },
+    }
+    expect(defaultSolverInfo(o, 'casadi_integrator')).toEqual({ reltol: 1e-8 })
+  })
 })
 
 describe('solverFieldsForMethod', () => {
