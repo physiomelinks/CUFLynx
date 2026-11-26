@@ -155,8 +155,9 @@ ORIGIN_BOXES = (
 
 def parameter_origins(plan: dict | None) -> dict | None:
     """Every value of the target in a box by where it comes from, before any step runs, from
-    CA's plan (``plan_workflow``'s ``target_values``): ``{"boxes": [{id, title, mark, values:
-    [{name, value, units, note, calibrated_by, origin, data_reference, reason}], to}],
+    CA's plan (``plan_workflow``'s ``target_values``, a module array's library values included,
+    each by the origin its parameterisation records): ``{"boxes": [{id, title, mark, values:
+    [{name, value, units, note, calibrated_by, origin, data_reference, reason, source}], to}],
     "model_counts": {}, "editable"}``, the shape of ``value_origins``; ``editable``: the target
     has a parameters file to record each value's origin in (``set_value_origin``). ``to`` is the chart's model box, whose parameters hold the values, or
     for "to be calibrated" the steps that calibrate them. None when the plan has no
@@ -174,11 +175,17 @@ def parameter_origins(plan: dict | None) -> dict | None:
         else:
             box = "inherited" if origin == "inherited" else "unrecorded"
         note = v.get("reason") if origin == "set_by_hand" else v.get("data_reference")
-        row = _row(v.get("name"), v.get("value"), v.get("units"),
-                   note or v.get("reason") or v.get("data_reference"))
+        note = note or v.get("reason") or v.get("data_reference") or ""
+        source = v.get("source") or ""
+        if source:
+            # a module array's value from its library: the note names the parameterisation,
+            # as libcuflynx's calibrated parameters file writes it
+            note = f"from {source}" + (f": {note}" if note else "")
+        row = _row(v.get("name"), v.get("value"), v.get("units"), note)
         by_box.setdefault(box, []).append(dict(
             row, calibrated_by=list(v.get("calibrated_by") or []), origin=origin,
-            data_reference=v.get("data_reference") or "", reason=v.get("reason") or ""))
+            data_reference=v.get("data_reference") or "", reason=v.get("reason") or "",
+            source=source))
     boxes = []
     for box_id, title, mark in ORIGIN_BOXES:
         rows = by_box.get(box_id)

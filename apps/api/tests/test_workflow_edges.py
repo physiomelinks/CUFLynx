@@ -161,6 +161,23 @@ def test_every_value_of_the_target_is_in_one_box_by_its_origin():
     assert boxes["to_calibrate"]["to"] == ["fit-b", "fit-a"]
 
 
+def test_a_library_value_is_boxed_by_its_parameterisations_origin_and_names_it():
+    """Q-0063: a module array's values from its module library are boxed like the target's own,
+    by the origin their parameterisation records, and the note says which parameterisation."""
+    plan = {"target_values": [
+        _value("C/q", "measured", data_reference="own note"),
+        _value("C/k", "measured", data_reference="smith2024; Fig. 2",
+               source="lin_c/v1 parameterisation default"),
+        _value("C/j", None, source="lin_c/v1 parameterisation default")]}
+    boxes = {b["id"]: b for b in we.parameter_origins(plan)["boxes"]}
+    assert [v["name"] for v in boxes["measured"]["values"]] == ["C/q", "C/k"]
+    own, lib = boxes["measured"]["values"]
+    assert (own["note"], own["source"]) == ("own note", "")
+    assert lib["note"] == "from lin_c/v1 parameterisation default: smith2024; Fig. 2"
+    assert lib["data_reference"] == "smith2024; Fig. 2"     # the form edits the note itself
+    assert boxes["unrecorded"]["values"][0]["note"] == "from lin_c/v1 parameterisation default"
+
+
 def test_a_plan_without_target_values_leaves_the_boxes_to_the_provenance_graph():
     assert we.parameter_origins({"steps": []}) is None and we.parameter_origins(None) is None
     assert we.parameter_origins({"target_values": []}) == {"boxes": [], "model_counts": {},
