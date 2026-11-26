@@ -32,6 +32,7 @@ from pathlib import Path
 
 import ca_obs
 from ca_imports import ensure_ca_path
+from optimiser_budget import default_method
 
 # Markers the API watches for in stdout.
 DONE_MARKER = "__EMULATOR_DONE__"
@@ -110,7 +111,7 @@ def run(config: dict) -> dict:
         "model_path": config["model_path"],
         "model_type": config.get("model_type", "cellml"),
         "file_prefix": file_prefix,
-        "param_id_method": settings.get("param_id_method", "genetic_algorithm"),
+        "param_id_method": settings.get("param_id_method") or default_method(),
         "params_for_id_path": config["params_path"],
         "param_id_obs_path": config["obs_path"],
         "param_id_output_dir": output_dir,

@@ -37,6 +37,7 @@ from pathlib import Path
 import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
+from optimiser_budget import default_method
 
 # Markers the API watches for in stdout.
 DONE_MARKER = "__SENSITIVITY_DONE__"
@@ -164,7 +165,7 @@ def _build_local_engine(config: dict, settings: dict, solver_info: dict, model_t
     return CVS0DParamID(
         model_path=config["model_path"],
         model_type=model_type,
-        param_id_method=settings.get("param_id_method", "genetic_algorithm"),
+        param_id_method=settings.get("param_id_method") or default_method(),
         file_name_prefix=config.get("file_prefix", "model"),
         params_for_id_path=config["params_path"],
         param_id_obs_path=config["obs_path"],
@@ -200,7 +201,7 @@ def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict, mode
 
     from optimiser_budget import default_num_calls  # noqa: E402 (shipped into runners/ too)
 
-    method = settings.get("param_id_method", "genetic_algorithm")
+    method = settings.get("param_id_method") or default_method()
     num_calls = settings.get("num_calls_to_function")
     if num_calls is None:
         num_calls = default_num_calls(method, debug=bool(settings.get("DEBUG", False)))
@@ -214,14 +215,14 @@ def _calibrate_for_nominal(config: dict, settings: dict, solver_info: dict, mode
 
     print(
         "Running a calibration first to locate the best-fit nominal point "
-        f"({settings.get('param_id_method', 'genetic_algorithm')}, "
+        f"({method}, "
         f"{optimiser_options['num_calls_to_function']} max evals)",
         flush=True,
     )
     param_id = CVS0DParamID(
         model_path=config["model_path"],
         model_type=model_type,
-        param_id_method=settings.get("param_id_method", "genetic_algorithm"),
+        param_id_method=method,
         file_name_prefix=config.get("file_prefix", "model"),
         params_for_id_path=config["params_path"],
         param_id_obs_path=config["obs_path"],

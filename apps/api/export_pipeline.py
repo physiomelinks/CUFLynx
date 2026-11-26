@@ -20,7 +20,7 @@ from datetime import date
 
 from ca_imports import ca_from, ensure_ca_path
 from obs_data import data_items_of
-from optimiser_budget import default_num_calls
+from optimiser_budget import default_method, default_num_calls
 
 
 def dated_suffix() -> str:
@@ -133,7 +133,7 @@ def build_user_inputs(
         # against the export folder by build_inp_data_dict.
         **{key: f"resources/{name}" for key, name in (user_func_files or {}).items()},
         # --- parameter identification (calibration) ---
-        "param_id_method": calibration.get("param_id_method") or "genetic_algorithm",
+        "param_id_method": calibration.get("param_id_method") or default_method(),
         "do_ad": str(calibration.get("gradient_method", "FD")).upper() == "AD",
         "optimiser_options": optimiser_options,
         # --- sensitivity ---
