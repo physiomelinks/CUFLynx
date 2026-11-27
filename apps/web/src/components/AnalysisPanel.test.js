@@ -2,6 +2,19 @@ import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import AnalysisPanel from './AnalysisPanel.vue'
 
+describe('AnalysisPanel error bars with no value', () => {
+  it('draws a dash and no bar for a null percent error, keeping every label', () => {
+    const w = mount(AnalysisPanel, {
+      props: { percentError: [12.5, null], stdError: [0.5, 0.2], errorLabels: ['u', 'ratio'] },
+    })
+    const chart = w.find('[data-testid="percent-error-chart"]')
+    expect(chart.exists()).toBe(true)
+    expect(chart.text()).toContain('12.5%')
+    expect(chart.text()).toContain('ratio')
+    expect(chart.text()).toContain('—')
+  })
+})
+
 const UQ_PARAMS = [
   {
     qname: 'Lotka_Volterra_module/alpha',
