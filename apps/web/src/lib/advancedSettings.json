@@ -10,7 +10,6 @@
       "num_survivors",
       "num_mutations_per_survivor",
       "num_cross_breed",
-      "sigma0",
       "start_sampling",
       "include_init_point",
       "fd_step",
