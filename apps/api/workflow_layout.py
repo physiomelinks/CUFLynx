@@ -279,7 +279,7 @@ def make_sweep(workflow_path: str, draft: str, *, obs_data: str | None, outputs:
             os.makedirs(os.path.dirname(kept), exist_ok=True)
             shutil.copyfile(source, kept)
             source = kept
-        step["obs_data"] = os.path.relpath(source, base)
+        step["obs_data"] = _relative(source, base)
     raw.setdefault("steps", []).append(step)
     _write_checked(workflow_path, raw)
     layout["drafts"] = [d for d in layout["drafts"] if d.get("id") != draft]
@@ -417,7 +417,7 @@ def make_manual_reduction(workflow_path: str, draft: str, params_for_id: str, pa
     shutil.copyfile(params_for_id, kept)
     raw = copy.deepcopy(study_workflow.read_raw(workflow_path))
     raw.setdefault("steps", []).append({
-        "id": draft, "kind": "reduction", "params_for_id": os.path.relpath(kept, base),
+        "id": draft, "kind": "reduction", "params_for_id": _relative(kept, base),
         "settings": {"param_reduction_options": {
             "method": "manual", "parameters": names, "reason": str(reason).strip()}}})
     _write_checked(workflow_path, raw)
@@ -497,6 +497,12 @@ def _with_link(raw: dict, source: str, target: str, key: str, options: dict | No
         entries.append(_entry(source, key, options))
         step[key] = entries
     return raw
+
+
+def _relative(path: str, base: str) -> str:
+    """``path`` relative to ``base`` with ``/`` separators, as the workflow file stores it, so
+    a workflow written on Windows opens elsewhere."""
+    return os.path.relpath(path, base).replace(os.sep, "/")
 
 
 def _write_checked(workflow_path: str, raw: dict) -> None:

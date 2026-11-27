@@ -544,3 +544,15 @@ def test_two_calibrations_of_one_parameter_combined_by_cost_run_by_ca(
     assert combined["best_cost"] == pytest.approx(min(costs.values()))
     status = client.get("/api/workflow").json()["status"]["steps"]
     assert status[draft]["chosen_from"] == combined["chosen_from"]
+
+
+def test_a_path_in_the_workflow_file_uses_forward_slashes(monkeypatch):
+    """Paths the editor writes into the workflow are relative and use ``/`` on every OS, so a
+    workflow saved on Windows opens elsewhere."""
+    import ntpath
+    import workflow_layout
+    with monkeypatch.context() as m:
+        m.setattr(workflow_layout.os, "path", ntpath)
+        m.setattr(workflow_layout.os, "sep", "\\")
+        rel = workflow_layout._relative(r"C:\w\data\new-1_obs_data.json", r"C:\w")
+    assert rel == "data/new-1_obs_data.json"
