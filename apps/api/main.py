@@ -24,6 +24,7 @@ import contextlib
 import errno
 import io
 import json
+import copy
 import os
 import re
 import secrets
@@ -280,6 +281,9 @@ class _ModelRecord:
         #: step's tab in the Workflow tab -- as ``{"results_dir", "step", "workflow"}``.
         #: Its best fit is the previous best fit until this session calibrates.
         self.opened_calibration: dict | None = None
+        # the study workflow's own target, when the study is one of its steps opened as the
+        # study (/api/workflow/view): what runs from it name as their model
+        self.study_target: str | None = None
 
 
 # In-memory registry of uploaded models (process-scoped session store).
@@ -4172,6 +4176,8 @@ def _with_engine_dt(settings: dict) -> dict:
     that is a caller asking for a specific step.
     """
     settings = dict(settings or {})
+    # which step of the study workflow the run is (the route reads it): never a CA option
+    settings.pop("workflow_target", None)
     if settings.get("dt") in (None, ""):
         settings["dt"] = engine.dt
     return settings
@@ -4194,8 +4200,7 @@ def _study_running_step() -> str | None:
         job = manager._job
         if job is not None and job.state == "running" and getattr(job, "study_step", None):
             return job.study_step["step"]
-    if workflow.busy and workflow.path and os.path.basename(
-            os.path.dirname(workflow.path)) == study_workflow.WORKFLOW_DIR:
+    if workflow.busy and study_workflow.working_dir_of(workflow.path):
         return workflow._job.current_step or "a step"
     return None
 
@@ -4207,10 +4212,64 @@ def _study_entries(record: "_ModelRecord") -> list:
         return []
 
 
-def _study_plan(record: "_ModelRecord", configured: str, config: dict, *,
+def _external_draft_plan(configured: str, config: dict):
+    """``(plan, notes)`` for a run that makes a model box of the open workflow when that
+    workflow is not one of the working dir's study workflows (one opened from elsewhere, such
+    as a workflow of module-library models): the step goes into that workflow's own file, on
+    the box's model, its results into that workflow's run directory, with its module
+    libraries. None for any other run.
+
+    Raises:
+        HTTPException: 422 when the box is not one a panel's run makes.
+    """
+    import workflow_layout  # noqa: PLC0415
+
+    wanted = config.get("workflow_target") or {}
+    path = wanted.get("workflow")
+    if wanted.get("mode") != "new_step" or not wanted.get("draft") or not path:
+        return None
+    if not workflow.loaded or os.path.abspath(path) != workflow.path \
+            or study_workflow.working_dir_of(workflow.path):
+        return None
+    draft = next((d for d in workflow_layout.read(path)["drafts"]
+                  if d.get("id") == wanted["draft"]), None)
+    if draft is None:
+        raise HTTPException(status_code=422, detail=f"the workflow has no new step {wanted['draft']!r}")
+    if not draft.get("model"):
+        raise HTTPException(status_code=422, detail=(
+            f"{draft['id']} is not on a model: in this workflow a step a panel runs is made "
+            f"from a model box (New step, Models)"))
+    try:
+        (builder_cls,) = study_workflow._ca("WorkflowBuilder")
+        builder = builder_cls.load(path)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=f"the workflow: {exc}") from exc
+    plan = study_workflow.Plan(builder, configured)
+    plan.external_run_dir = workflow.output_dir or None
+    plan.module_library_dirs = list(workflow.module_library_dirs or _module_library_dirs)
+    plan.draft = draft["id"]
+    # every step this run writes is on the box's model, not the study's: its paths resolved
+    # against the workflow's folder, and none at all when it is the target (a step with no
+    # model runs on the target)
+    model = study_workflow.resolved_model(draft["model"], os.path.dirname(path))
+    target = study_workflow.resolved_model(builder.to_dict().get("target"), os.path.dirname(path))
+    config["study_model"] = None if model == target else model
+    return plan, [_study_note(
+        f"this run makes {draft['id']} a step of {builder.name} on "
+        f"{study_workflow.model_words(draft['model'])}; its results go to "
+        f"{plan.run_dir}.")]
+
+
+def _study_plan(record: "_ModelRecord", configured: str, config: dict, *, flavour: str,
                 held_out: bool = False, needs_point: bool = False):
     """``(plan, notes)``: the study workflow to add this run's steps to, or ``(None,
-    notes)`` when the run keeps its direct runner, ``notes`` saying why for the run log."""
+    notes)`` when the run keeps its direct runner, ``notes`` saying why for the run log.
+
+    The run's ``workflow_target`` (``config``) says which workflow and step it is
+    (:data:`study_workflow.TARGET_MODES`): by default the open workflow's latest step of
+    this ``flavour`` (:func:`study_workflow.flavour`) is changed, and a step is added only
+    when it has none of them.
+    """
     global _study_unavailable_said
     if not study_workflow.enabled():
         return None, []
@@ -4235,14 +4294,44 @@ def _study_plan(record: "_ModelRecord", configured: str, config: dict, *,
         raise HTTPException(status_code=409, detail=(
             f"step {running} of the study workflow is running; this run is the next step "
             f"of the same workflow, so start it when that one has finished"))
-    # the CellML the workflow's model is, for a model type CA generates from it
-    config.setdefault("cellml_model_path", _model_file(record))
+    external = _external_draft_plan(configured, config)
+    if external:
+        return external
+    # the CellML the workflow's model is, for a model type CA generates from it; a study
+    # opened from a study workflow's step runs as that workflow's own target
+    study_target = getattr(record, "study_target", None)
+    config.setdefault("cellml_model_path", study_target or _model_file(record))
+    if study_target:
+        config["study_target_path"] = study_target
     try:
         target = _study_target(config)
-        builder = study_workflow.open_workflow(configured, target)
+        wanted = config.get("workflow_target") or {}
+        open_path = wanted.get("workflow") or (
+            workflow.path if study_workflow.working_dir_of(workflow.path) else None)
+        builder, note = study_workflow.open_workflow(
+            configured, target, path=open_path, new=wanted.get("mode") == "new_workflow")
+        edit = study_workflow.edited_step(builder, wanted, flavour)
     except (study_workflow.StudyWorkflowError, ValueError, OSError) as exc:
         raise HTTPException(status_code=422, detail=f"the study workflow: {exc}") from exc
-    return study_workflow.Plan(builder, configured), []
+    notes = [_study_note(note)] if note else []
+    if edit:
+        notes.append(_study_note(
+            f"this run changes step {edit} of workflow {builder.name}, and runs it and the "
+            f"steps that take from it (choose a new step in the Workflow view to add one "
+            f"instead)."))
+    plan = study_workflow.Plan(builder, configured, edit=edit)
+    # a new step the user put on the chart (a draft), which this run makes a step
+    plan.draft = wanted.get("draft") if wanted.get("mode") == "new_step" else None
+    if plan.draft:
+        import workflow_layout  # noqa: PLC0415
+
+        drafts = workflow_layout.read(builder.path)["drafts"]
+        if any(d.get("id") == plan.draft and d.get("on_target") for d in drafts):
+            raise HTTPException(status_code=422, detail=(
+                f"{plan.draft} is after the target, where a step is a simulation of the merged "
+                f"model: fill in its Simulation form (double-click it), or choose another new "
+                f"step for this {flavour} run"))
+    return plan, notes
 
 
 def _study_settings(config: dict, settings: dict, extra: dict) -> dict:
@@ -4271,7 +4360,8 @@ def _study_target(config: dict) -> dict | None:
     """The workflow model of this run: the user's file for an external Python model, else
     the CellML (the run's ``model_path`` is the generated ``.py`` for a generated type)."""
     model_type = config["model_type"]
-    path = (config["model_path"] if model_type == "external_python"
+    path = (config.get("study_target_path") or config["model_path"]
+            if model_type == "external_python"
             else config.get("cellml_model_path") or config["model_path"])
     return study_workflow.target_model(path, model_type)
 
@@ -4279,7 +4369,7 @@ def _study_target(config: dict) -> dict | None:
 def _study_inputs(config: dict, obs_path: str | None = None) -> dict:
     """The model, obs_data and params_for_id every step of this run names, and the
     emulator it runs on when the Emulator tab's tick box is on."""
-    out = {"model": _study_target(config),
+    out = {"model": config["study_model"] if "study_model" in config else _study_target(config),
            "obs_data": obs_path or config["obs_path"], "params_for_id": config["params_path"]}
     if config.get("use_emulator"):
         out["emulator_dir"] = config["emulator_dir"]
@@ -4332,21 +4422,34 @@ def _study_point(plan, model_id: str, qnames: list) -> str | None:
     latest done one of a reopened working dir), else a set step with the best fit (or the
     best-so-far of a calibration stopped early), its reason saying which."""
     finished = calibration.last_completed_step(model_id)
-    if finished and finished["workflow"] == plan.path and finished["step"] in plan.builder.steps:
+    if finished and finished["workflow"] == plan.path and finished["step"] == plan.edit:
+        # the step this run changes: its best fit as it stands, as values, since a step
+        # cannot start from itself
+        best = calibration.last_completed_best_params(model_id)
+        if best:
+            return plan.add_set("best_fit", study_workflow.set_entries(
+                best, qnames, f"best fit of step {plan.edit} before this run changed it"))
+    if finished and finished["workflow"] == plan.path and \
+            finished["step"] in plan.builder.steps and finished["step"] != plan.edit:
         return finished["step"]
     best = calibration.last_completed_best_params(model_id)
     if not best and finished is None:
         record = _get_model(model_id)
         opened = _opened_calibration(record)
         if opened:
-            if opened["workflow"] == plan.path and opened["step"] in plan.builder.steps:
+            if opened["workflow"] == plan.path and opened["step"] in plan.builder.steps \
+                    and opened["step"] != plan.edit:
                 return opened["step"]
             return plan.add_set("best_fit", study_workflow.set_entries(
                 opened["best"], qnames,
                 f"best fit of calibration step {opened['step']} of {opened['workflow']}"))
         reopened = _reopened_calibration(record, {"config_outputs_dir": plan.working_dir})
         if reopened and reopened["step"] in plan.builder.steps:
-            return reopened["step"]
+            if reopened["step"] != plan.edit:
+                return reopened["step"]
+            return plan.add_set("best_fit", study_workflow.set_entries(
+                reopened["best"], qnames,
+                f"best fit of step {plan.edit} before this run changed it"))
     if not best:
         return None
     stopped = calibration.last_completed_step(model_id, finished_only=False)
@@ -4358,13 +4461,26 @@ def _study_point(plan, model_id: str, qnames: list) -> str | None:
 
 
 def _study_start(plan, config: dict, markers: tuple, notes: list) -> None:
-    """Write the workflow, point ``config`` at its step and open it in the Workflow tab."""
+    """Write the workflow, point ``config`` at its step and open it in the Workflow tab.
+    A run made from a draft gives the new step the draft's place and arrows, checked by CA
+    (a 422 with CA's reason when it refuses one, before anything runs)."""
     plan.write()
+    if getattr(plan, "draft", None):
+        import workflow_layout  # noqa: PLC0415
+
+        try:
+            workflow_layout.draft_became(plan.path, plan.draft, plan.step)
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=(
+                f"step {plan.step} was added, but an arrow drawn to it was refused: {exc}. "
+                f"Change the arrow in the Workflow view and run again.")) from exc
     config.update(plan.runner_config({"done": markers[0], "fail": markers[1]}))
     config["log_preamble"] = notes + [_study_note(
-        f"step {plan.step} of {plan.path} (adds {', '.join(plan.added)}); its results "
+        f"step {plan.step} of {plan.path} ({'changes' if plan.edit else 'adds'} "
+        f"{', '.join(plan.added)}); its results "
         f"go to {plan.step_dir()}.")]
-    if not workflow.busy and (not workflow.loaded or workflow.path == plan.path):
+    if not workflow.busy and (not workflow.loaded or workflow.path == plan.path
+                              or study_workflow.working_dir_of(workflow.path)):
         try:
             workflow.load(plan.path, plan.run_dir, [])
         except (workflow_manager.WorkflowError, workflow_manager.WorkflowUnavailable,
@@ -4400,7 +4516,8 @@ def _study_calibration(record, req, config: dict, configured: str) -> list:
     except (OSError, ValueError):
         held_out = False
     with study_workflow.lock():
-        plan, notes = _study_plan(record, configured, config, held_out=held_out,
+        plan, notes = _study_plan(record, configured, config, flavour="calibration",
+                                  held_out=held_out,
                                   needs_point=start_from in ("current", "best_fit"))
         if plan is None:
             return notes
@@ -4420,7 +4537,7 @@ def _study_calibration(record, req, config: dict, configured: str) -> list:
             notes.append(_study_note(f"the genetic algorithm draws its first population at "
                                      f"random, so it does not start at step {start}'s values "
                                      f"(they are recorded as where it was asked to start)."))
-        plan.add("add_calibration", plan.new_id(study_workflow.LABELS["calibration"]),
+        plan.add("add_calibration", plan.main_id(study_workflow.LABELS["calibration"]),
                  **_study_inputs(config), start_from=start,
                  settings=_study_settings(config, settings, extra))
         _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
@@ -4448,17 +4565,21 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
         nominal in ("best_fit", "midpoint", "geometric")
         or (nominal == "current" and bool(req.current_params)))
     with study_workflow.lock():
-        plan, notes = _study_plan(record, configured, config, needs_point=needs_point)
+        plan, notes = _study_plan(record, configured, config, flavour=method,
+                                  needs_point=needs_point)
         if plan is None:
             return notes
         entries = _study_entries(record)
         qnames = [q for e in entries for q in e.qnames]
+        own = plan.main_id(study_workflow.LABELS["local" if local else "sobol"])
         at = None
         if first:
             ga = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
                   "optimiser_options": _study_ga_options(settings, {"cost_convergence": 0.0001})}
-            at = plan.add("add_calibration", plan.new_id(study_workflow.LABELS["calibration"]),
-                          **_study_inputs(config), settings=_study_settings(config, settings, ga))
+            at = plan.add("add_calibration", plan.first_id(study_workflow.LABELS["calibration"],
+                                                          "result_from", own),
+                          **_study_inputs(config), settings=_study_settings(config, settings, ga),
+                          description=study_workflow.first_description(own))
         elif local and nominal == "best_fit":
             at = _study_point(plan, record.model_id, qnames)
         elif local and nominal == "current" and req.current_params:
@@ -4479,8 +4600,7 @@ def _study_sensitivity(record, req, config: dict, configured: str) -> list:
                 settings, config["model_type"])
             sa_options["gradient_method"] = gradient
             sa_options["fd_rel_step"] = float(settings.get("rel_step") or 0.01)
-        label = study_workflow.LABELS["local" if local else "sobol"]
-        plan.add("add_sensitivity", plan.new_id(label), **_study_inputs(config),
+        plan.add("add_sensitivity", own, **_study_inputs(config),
                  sa_options=sa_options, result_from=at,
                  settings=_study_settings(config, settings, {}))
         config["study_meta"] = {"method": method, "gradient_method": gradient}
@@ -4497,7 +4617,8 @@ def _study_uq(record, config: dict, configured: str) -> list:
     method = settings.get("method", "mcmc")
     first = bool(settings.get("run_calibration_first"))
     with study_workflow.lock():
-        plan, notes = _study_plan(record, configured, config, needs_point=not first)
+        plan, notes = _study_plan(record, configured, config, flavour=method,
+                                  needs_point=not first)
         if plan is None:
             return notes
         qnames = [q for e in _study_entries(record) for q in e.qnames]
@@ -4505,21 +4626,45 @@ def _study_uq(record, config: dict, configured: str) -> list:
         # stored as an input of its own (as the direct runner stores it)
         cost_type = settings.get("cost_type", "gaussian_MLE")
         obs = _mle_obs_path(config, cost_type)
+        own = plan.main_id(study_workflow.LABELS.get(method, "uq"))
         if first:
             ga = {"param_id_method": settings.get("param_id_method", "genetic_algorithm"),
                   "optimiser_options": _study_ga_options(
                       settings, {"cost_convergence": 0.001, "cost_type": cost_type})}
-            at = plan.add("add_calibration", plan.new_id(study_workflow.LABELS["calibration"]),
+            at = plan.add("add_calibration", plan.first_id(study_workflow.LABELS["calibration"],
+                                                          "result_from", own),
                           **_study_inputs(config, obs),
-                          settings=_study_settings(config, settings, ga))
+                          settings=_study_settings(config, settings, ga),
+                          description=study_workflow.first_description(own))
         else:
             at = _study_point(plan, record.model_id, qnames)
         uq_options = dict(_uq_options(study_workflow.options(settings), _analysis_seed),
                           method=method)
         extra = {"ia_options": {"method": "Laplace"}} if method == "laplace" else {}
-        plan.add("add_uq", plan.new_id(study_workflow.LABELS.get(method, "uq")),
+        plan.add("add_uq", own,
                  **_study_inputs(config, obs), uq_options=uq_options, result_from=at,
                  settings=_study_settings(config, settings, extra))
+        _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
+    return config["log_preamble"]
+
+
+def _study_emulation(record, config: dict, configured: str) -> list:
+    """Make this emulator training a step of the study workflow (an ``emulation`` step);
+    the run-log notes. Its emulator is where CA trains a step's (``<run>/<step>/``), and
+    the Emulator tab finds it there (``ca_run_history.workflow_emulator_bundles``)."""
+    from emulator_runner import DONE_MARKER, FAIL_MARKER, _emulator_settings  # noqa: PLC0415
+
+    settings = config["settings"]
+    with study_workflow.lock():
+        plan, notes = _study_plan(record, configured, config, flavour="emulation")
+        if plan is None:
+            return notes
+        emu = _emulator_settings(study_workflow.options(settings), "", _analysis_seed)
+        emu.pop("emulator_dir", None)     # CA trains a step's emulator in its step dir
+        inputs = _study_inputs(config)
+        inputs.pop("emulator_dir", None)
+        plan.add("add_emulation", plan.main_id(study_workflow.LABELS["emulation"]), **inputs,
+                 emulator_settings=emu, settings=_study_settings(config, settings, {}))
         _study_start(plan, config, (DONE_MARKER, FAIL_MARKER), notes)
     return config["log_preamble"]
 
@@ -4602,6 +4747,7 @@ def calibration_run(req: CalibrationRequest) -> dict:
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": _with_engine_dt(req.settings),
+        "workflow_target": req.settings.get("workflow_target"),
         # The original uploaded CellML, so the runner can save a calibrated copy
         # with best-fit values baked in (issue #114), independent of model_type.
         "cellml_path": _model_file(record),
@@ -4675,12 +4821,33 @@ class WorkflowLoadRequest(BaseModel):
     config_outputs_dir: str = ""
 
 
+class WorkflowStepDeleteRequest(BaseModel):
+    step: str
+    #: Delete the steps that would go with it too (``deleted`` of an unconfirmed answer).
+    confirm: bool = False
+
+
+class WorkflowStepRenameRequest(BaseModel):
+    step: str
+    #: The step's new id.
+    to: str
+
+
+class WorkflowStepMoveRequest(BaseModel):
+    step: str
+    #: Its new position in the workflow's steps, from 0.
+    index: int
+
+
 class WorkflowViewRequest(BaseModel):
     # A step id, or "target" for the supermodule the workflow calibrates.
     view: str
     # The user's working dir: an external Python model is kept there as the study's
     # model (inputs/funcs/user_model.py), as an upload keeps it.
     config_outputs_dir: str = ""
+    # False: the view's model only, without the step's obs_data and params_for_id (a new
+    # step on that model brings its own).
+    inputs: bool = True
 
 
 class WorkflowRunRequest(BaseModel):
@@ -4695,6 +4862,37 @@ class WorkflowRunRequest(BaseModel):
 #: model_id -> the workflow file of the workflow tab it was loaded from: a study sent on from
 #: a tab carries its workflow, packed.
 _workflow_view_models: dict[str, str] = {}
+#: Each tab loaded as the study, by what it was built from (``_view_key``): clicking back to a
+#: box returns the same study, so neither CA's model generation (seconds: a Myokit compile
+#: to validate it) nor the live simulation's compile runs again.
+_workflow_view_cache: dict[tuple, dict] = {}
+
+
+def _view_key(req) -> tuple | None:
+    """What a tab's study depends on: the workflow file, every step's result in its run
+    directory (a run, a rerun or a deletion changes them), the CA dir, the tab and whether
+    its inputs come with it. A workflow never run has no run directory yet: no results.
+    None when no workflow is open. (The working dir matters only to an external model's
+    tab, which is not kept.)"""
+    out = workflow.output_dir
+    if not workflow.path or not out:
+        return None
+    try:
+        own = os.stat(workflow.path)
+    except OSError:
+        return None
+    results = []
+    for name in sorted(os.listdir(out)) if os.path.isdir(out) else ():
+        for leaf in ("step_result.json", ""):
+            path = os.path.join(out, name, leaf) if leaf else os.path.join(out, name)
+            if leaf and os.path.isfile(path):
+                st = os.stat(path)
+                results.append((name, st.st_mtime_ns, st.st_size))
+    top = os.path.join(out, "workflow_result.json")
+    top_stat = os.stat(top).st_mtime_ns if os.path.isfile(top) else 0
+    return (workflow.path, own.st_mtime_ns, own.st_size, tuple(results), top_stat,
+            tuple(workflow.module_library_dirs or ()), os.environ.get("CIRCULATORY_AUTOGEN_SRC", ""),
+            req.view, bool(req.inputs))
 
 
 def _workflow_http(fn, *args, **kwargs):
@@ -4725,7 +4923,14 @@ def _open_workflow_file(path: str, outputs_dir: str) -> dict:
 def workflow_describe() -> dict:
     """The open workflow: its file, which parameter of each step lands where, and
     where each step stands in the run directory."""
-    return _workflow_http(workflow.describe)
+    return _with_warm_up(_workflow_http(workflow.describe))
+
+
+def _with_warm_up(described: dict) -> dict:
+    """A described workflow, its tabs being built in the background (:func:`_warm_views`),
+    with what that build is doing as ``warm_up`` when it is doing anything."""
+    warm_up = _warm_views()
+    return {**described, "warm_up": warm_up} if warm_up else described
 
 
 @app.post("/api/workflow/load")
@@ -4740,8 +4945,10 @@ def workflow_load(req: WorkflowLoadRequest) -> dict:
     outputs_dir = _working_dir_arg(req.config_outputs_dir) or ""
     if req.run_dir.strip():
         _workflow_http(workflow.load_run, req.run_dir.strip(), list(_module_library_dirs))
-        return _workflow_http(workflow.describe)
-    return _open_workflow_file(req.path.strip(), outputs_dir)
+        described = _workflow_http(workflow.describe)
+    else:
+        described = _open_workflow_file(req.path.strip(), outputs_dir)
+    return _with_warm_up(described)
 
 
 @app.post("/api/workflow/upload")
@@ -4781,14 +4988,6 @@ class WorkflowWorkingDirRequest(BaseModel):
     config_outputs_dir: str = ""
 
 
-def _is_study_workflow(path: str | None) -> bool:
-    """Whether ``path`` is some working dir's study workflow (``<dir>/workflow/...``)."""
-    if not path:
-        return False
-    folder = os.path.dirname(os.path.dirname(os.path.abspath(path)))
-    return os.path.abspath(path) == os.path.abspath(study_workflow.workflow_path(folder))
-
-
 def _workflow_runs_in(directory: str | None) -> bool:
     """Whether the open workflow's run directory is inside ``directory``."""
     if not directory or not workflow.output_dir:
@@ -4807,9 +5006,10 @@ def _stays_open_in(directory: str | None) -> bool:
     """
     if not workflow.loaded:
         return False
+    folder = study_workflow.working_dir_of(workflow.path)
+    if folder:
+        return bool(directory) and os.path.abspath(folder) == os.path.abspath(directory)
     own = study_workflow.workflow_path(directory) if directory else None
-    if _is_study_workflow(workflow.path):
-        return bool(own) and os.path.abspath(workflow.path) == os.path.abspath(own)
     return _workflow_runs_in(directory) or not (own and os.path.isfile(own))
 
 
@@ -4833,8 +5033,312 @@ def workflow_working_dir(req: WorkflowWorkingDirRequest) -> dict:
     return _workflow_http(workflow.describe)
 
 
+@app.get("/api/workflow/list")
+def workflow_list(config_outputs_dir: str = "") -> dict:
+    """The working dir's workflows (``study_workflow.list_workflows``), the most recently
+    written first, and which one is open."""
+    directory = _working_dir_arg(config_outputs_dir)
+    found = study_workflow.list_workflows(directory) if directory else []
+    return {"workflows": found, "open": workflow.path if workflow.loaded else None}
+
+
+def _editable_workflow() -> str:
+    """The open workflow's file, when no run is using it; else an HTTP error."""
+    if not workflow.loaded or not workflow.path:
+        raise HTTPException(status_code=422, detail="no workflow is open")
+    running = _study_running_step()
+    if workflow.busy or running:
+        raise HTTPException(status_code=409, detail=(
+            f"step {running or 'a step'} of the workflow is running; change the workflow "
+            f"when it has finished"))
+    return workflow.path
+
+
+def _reopen_edited(path: str) -> dict:
+    """Re-read the edited workflow into the Workflow view, its run directory kept."""
+    output_dir = workflow.output_dir
+    loaded = _workflow_http(workflow.load, path, "", list(_module_library_dirs))
+    workflow.output_dir = output_dir or workflow_manager.default_output_dir(
+        study_workflow.working_dir_of(path) or "", loaded["name"], str(UPLOAD_DIR))
+    return _with_warm_up(_workflow_http(workflow.describe))
+
+
+@app.get("/api/workflow/edge")
+def workflow_edge(source: str, target: str, key: str = "") -> dict:
+    """What passes along one arrow of the open workflow's chart: the values a step fixes in
+    the next, the distribution it gives as a prior, the point an analysis is at, the emulator,
+    the model, or the values merged into the target (``workflow_edges.edge_detail``)."""
+    import workflow_edges  # noqa: PLC0415
+
+    if not workflow.loaded or not workflow.path:
+        raise HTTPException(status_code=422, detail="no workflow is open")
+    try:
+        raw = study_workflow.read_raw(workflow.path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"cannot read {workflow.path}: {exc}") from exc
+    return workflow_edges.edge_detail(workflow.output_dir or "", raw, source, target, key)
+
+
+@app.post("/api/workflow/step/delete")
+def workflow_step_delete(req: WorkflowStepDeleteRequest) -> dict:
+    """Delete a step of the open workflow, reconnecting the steps that took from it to what
+    it took from (``study_workflow.delete_plan``).
+
+    When some step has nothing to reconnect to, it would be deleted too: then nothing
+    changes until the request is made again with ``confirm``, and ``applied`` is false with
+    ``deleted`` naming every step that would go. The steps' results stay in the run
+    directory.
+    """
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            result = study_workflow.delete_step(path, req.step, confirm=req.confirm)
+            if result["applied"]:
+                import workflow_layout  # noqa: PLC0415
+
+                workflow_layout.forget(path, result.get("deleted") or [req.step])
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    described = _reopen_edited(path) if result["applied"] else _workflow_http(workflow.describe)
+    return {**result, "workflow": described}
+
+
+@app.post("/api/workflow/step/rename")
+def workflow_step_rename(req: WorkflowStepRenameRequest) -> dict:
+    """Rename a step of the open workflow, and every reference to it; its results folder in
+    the run directory moves with it, so it keeps its results
+    (``study_workflow.rename_step``)."""
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            study_workflow.rename_step(path, req.step, req.to, workflow.output_dir or None)
+            import workflow_layout  # noqa: PLC0415
+
+            workflow_layout.rename(path, req.step, req.to.strip())
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _reopen_edited(path)
+
+
+class WorkflowLinkRequest(BaseModel):
+    #: The step (or draft) the arrow leaves, and the one it points at.
+    source: str
+    target: str
+    #: CA's key: what the target takes from the source (fixed_from, priors_from, ...).
+    key: str
+    #: A list key's options: a prior's kind / inflate / parameters, a fixed arrow's parameters.
+    options: dict | None = None
+    #: The arrow's key before this change, when changing what it passes.
+    old_key: str | None = None
+
+
+class WorkflowPositionRequest(BaseModel):
+    node: str
+    col: int
+    row: float
+
+
+class WorkflowPositionsRequest(BaseModel):
+    #: {id: {col, row}}: several boxes at once (a new column made in a gap).
+    positions: dict[str, dict]
+
+
+class WorkflowChooseParametersRequest(BaseModel):
+    #: The model box this makes a reduction chosen by hand.
+    draft: str
+    #: The study whose params_for_id holds the candidates.
+    model_id: str
+    #: Labels of the entries kept (``reduction_candidates``' names).
+    parameters: list[str]
+    reason: str
+
+
+class WorkflowSweepRequest(BaseModel):
+    #: The after-target new step this makes a sweep.
+    draft: str
+    #: The protocol's obs_data file; absent: the study's (``model_id``) current obs_data.
+    obs_data: str | None = None
+    model_id: str | None = None
+    outputs: list[str] = []
+    #: {"<vessel>/<param>": CA's sweep_range}; empty: one run of the merged target.
+    parameters: dict = {}
+    design: str | None = None
+    zip: list[list[str]] | None = None
+    #: The solver's output step; absent: the step the app's solver uses now.
+    dt: float | None = None
+
+
+class WorkflowDraftRequest(BaseModel):
+    #: Where the new box goes (absent: the chart places it).
+    col: int | None = None
+    row: float | None = None
+    #: Dropped after the target: a sweep on the merged target.
+    on_target: bool = False
+    #: A model box: the step's model as the workflow file writes it.
+    model: dict | str | None = None
+    #: An action box (workflow_layout.ACTIONS): set by hand, combine.
+    action: str | None = None
+    #: A draft to delete.
+    draft: str | None = None
+
+
+class WorkflowSetValuesRequest(BaseModel):
+    draft: str
+    #: [{parameter, value, reason}]
+    entries: list[dict]
+    point: bool = False
+
+
+class WorkflowCombineRequest(BaseModel):
+    draft: str
+    #: CA's combine.method: best_fit or mean
+    method: str = "best_fit"
+
+
+def _layout_edit(fn, *args, **kwargs) -> dict:
+    """Run a workflow_layout change on the open workflow; the Workflow view's description."""
+    import workflow_layout  # noqa: PLC0415
+
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            getattr(workflow_layout, fn)(path, *args, **kwargs)
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _reopen_edited(path)
+
+
+@app.post("/api/workflow/link")
+def workflow_link(req: WorkflowLinkRequest) -> dict:
+    """Draw or change an arrow: ``target`` takes ``source`` by ``key``. Between two steps it
+    goes into the workflow file, checked by CA; with a new step (a draft) at either end it
+    waits until the draft is a step (``workflow_layout.set_link``)."""
+    return _layout_edit("set_link", req.source, req.target, req.key, req.options, req.old_key)
+
+
+@app.post("/api/workflow/link/delete")
+def workflow_link_delete(req: WorkflowLinkRequest) -> dict:
+    return _layout_edit("remove_link", req.source, req.target, req.key)
+
+
+@app.post("/api/workflow/position")
+def workflow_position(req: WorkflowPositionRequest) -> dict:
+    """Where a box sits on the chart: its column and its order there (the layout only)."""
+    return _layout_edit("set_position", req.node, req.col, req.row)
+
+
+@app.post("/api/workflow/draft")
+def workflow_draft(req: WorkflowDraftRequest) -> dict:
+    """A new step on the chart, to place and draw arrows to; a panel's run with
+    ``workflow_target {mode: "new_step", draft}`` makes it a step of that run's kind.
+    ``draft`` in the response is its id."""
+    import workflow_layout  # noqa: PLC0415
+
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            draft = workflow_layout.add_draft(path, req.col, req.row, on_target=req.on_target,
+                                              model=req.model, action=req.action)
+        except study_workflow.StudyWorkflowError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {**_reopen_edited(path), "draft": draft}
+
+
+@app.post("/api/workflow/positions")
+def workflow_positions(req: WorkflowPositionsRequest) -> dict:
+    """Several boxes placed at once: a box dropped in the gap between two columns makes a
+    new column, and the boxes right of it move one column on."""
+    return _layout_edit("set_positions", req.positions)
+
+
+@app.post("/api/workflow/sweep")
+def workflow_sweep(req: WorkflowSweepRequest) -> dict:
+    """Make a new step dropped after the target a sweep on the merged target (its Simulation
+    form): CA's ``kind: sweep, on_target: true``, checked by CA. The workflow's Run runs it."""
+    obs = req.obs_data
+    if not obs and req.model_id:
+        record = _get_model(req.model_id)
+        obs = str(record.obs_path) if record.obs_path else None
+    if not obs:
+        raise HTTPException(status_code=422, detail=(
+            "a simulation needs a protocol: load an obs_data in the study, or give its file"))
+    dt = req.dt if req.dt is not None else engine.dt
+    return _layout_edit("make_sweep", req.draft, obs_data=obs, outputs=req.outputs,
+                        parameters=req.parameters, design=req.design, zip_groups=req.zip,
+                        settings={"dt": float(dt)} if dt else None)
+
+
+@app.post("/api/workflow/set_values")
+def workflow_set_values(req: WorkflowSetValuesRequest) -> dict:
+    """Make a Set values by hand action box a set step: each value with its reason, checked
+    by CA (a red set-by-hand box)."""
+    return _layout_edit("make_set", req.draft, req.entries, point=req.point)
+
+
+@app.get("/api/workflow/reduction_candidates")
+def workflow_reduction_candidates(model_id: str) -> dict:
+    """The study's params_for_id entries a reduction chosen by hand can keep, named as CA
+    names them, with their bounds."""
+    import workflow_layout  # noqa: PLC0415
+
+    record = _get_model(model_id)
+    if record.params_path is None:
+        raise HTTPException(status_code=422, detail="load the params_for_id to choose from")
+    try:
+        return {"params_for_id": Path(record.params_path).name,
+                "candidates": workflow_layout.reduction_candidates(str(record.params_path))}
+    except study_workflow.StudyWorkflowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/workflow/choose_parameters")
+def workflow_choose_parameters(req: WorkflowChooseParametersRequest) -> dict:
+    """Make a model box's Choose parameters a reduction chosen by hand (CA's manual
+    reduction, an orange box): the study's params_for_id entries ticked, and why."""
+    record = _get_model(req.model_id)
+    return _layout_edit("make_manual_reduction", req.draft,
+                        str(record.params_path) if record.params_path else "",
+                        req.parameters, req.reason)
+
+
+@app.post("/api/workflow/combine")
+def workflow_combine(req: WorkflowCombineRequest) -> dict:
+    """Make a Choose a parameter set by cost action box a combine step of the steps drawn
+    into it (CA's ``kind: combine``), checked by CA. The workflow's Run runs it."""
+    return _layout_edit("make_combine", req.draft, req.method)
+
+
+@app.post("/api/workflow/draft/delete")
+def workflow_draft_delete(req: WorkflowDraftRequest) -> dict:
+    return _layout_edit("delete_draft", req.draft or "")
+
+
+@app.post("/api/workflow/step/move")
+def workflow_step_move(req: WorkflowStepMoveRequest) -> dict:
+    """Move a step of the open workflow to another position. CA runs every step after the
+    steps it takes from, so a move that would put a step above one of those is refused."""
+    path = _editable_workflow()
+    with study_workflow.lock():
+        try:
+            study_workflow.move_step(path, req.step, req.index)
+        except (study_workflow.StudyWorkflowError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _reopen_edited(path)
+
+
 @app.post("/api/workflow/view")
 def workflow_view(req: WorkflowViewRequest) -> dict:
+    """Load one tab of the workflow -- a step, or the target -- as the current study (see
+    :func:`_workflow_view`)."""
+    return _workflow_view(req)
+
+
+#: One tab's model is generated at a time: Myokit changes the process's directory while it
+#: compiles, and the background warm-up (:func:`_warm_views`) and a click share it.
+_view_lock = threading.Lock()
+
+
+def _workflow_view(req: WorkflowViewRequest) -> dict:
     """Load one tab of the workflow -- a step, or the target -- as the current study.
 
     CA builds the model (``workflow_model``): a step's own model with the values its
@@ -4844,8 +5348,23 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     like a dropped study; an external Python model is loaded as an uploaded ``.py`` is
     (:func:`_load_external_view`), with the values CA wrote for it.
     """
+    key = _view_key(req)
+    cached = _workflow_view_cache.get(key) if key else None
+    if cached and cached["model_id"] in _models:
+        return copy.deepcopy(cached)
+    with _view_lock:
+        # the warm-up may have built it while this waited
+        cached = _workflow_view_cache.get(key) if key else None
+        if cached and cached["model_id"] in _models:
+            return copy.deepcopy(cached)
+        return _generate_view(req, key)
+
+
+def _generate_view(req: WorkflowViewRequest, key: tuple | None) -> dict:
     work_dir = UPLOAD_DIR / "workflow_views" / uuid.uuid4().hex
     view = _workflow_http(workflow.view, req.view, str(work_dir))
+    if not req.inputs:
+        view = {**view, "obs_data_path": None, "params_for_id_path": None}
     try:
         if (view.get("model") or {}).get("external_model_path"):
             result = _load_external_view(view, req.view, req.config_outputs_dir)
@@ -4855,6 +5374,19 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
         shutil.rmtree(work_dir, ignore_errors=True)
     _workflow_view_models[result["model_id"]] = workflow.path
     workflow.view_models[result["model_id"]] = req.view
+    result["name"] = _view_model_name(view, req.view)
+    # A step of a study workflow opened as the study (a block clicked in the chart): its
+    # model is a packed copy, so runs from it name the workflow's own target, or the next
+    # run would see another model and start a new workflow instead of changing the step.
+    if study_workflow.working_dir_of(workflow.path):
+        try:
+            target = study_workflow.read_raw(workflow.path).get("target") or {}
+        except (OSError, ValueError):
+            target = {}
+        rel = target.get("cellml_model_path") or target.get("external_model_path")
+        if isinstance(rel, str):
+            _models[result["model_id"]].study_target = os.path.normpath(
+                os.path.join(os.path.dirname(workflow.path), rel))
     result["workflow_view"] = {
         key: view.get(key) for key in (
             "view", "kind", "model", "step_id", "place", "fixed", "calibrated",
@@ -4872,18 +5404,170 @@ def workflow_view(req: WorkflowViewRequest) -> dict:
     # A sensitivity, emulation or identifiability step's own results, as a loaded working
     # dir reports them.
     result["workflow_view"]["step_outputs"] = load_outputs.step_outputs(view.get("result"))
+    if key and not (view.get("model") or {}).get("external_model_path"):
+        if len(_workflow_view_cache) > 64:
+            _workflow_view_cache.clear()
+        _workflow_view_cache[key] = copy.deepcopy(result)
     return result
 
 
+#: The thread building every box's study in the background (:func:`_warm_views`).
+_warm_thread: threading.Thread | None = None
+#: Step kinds with no model of their own, so no tab to build.
+_NO_TAB_KINDS = ("reduction", "set", "combine")
+#: Seconds the warm-up may spend without asking. Past it, the warm-up builds one box,
+#: predicts the rest from it and stops; the user then builds all, or clicks the boxes
+#: wanted. A 240-instance module array takes ~35 s a box, the enterocyte workflow ~3 s.
+WARM_BUDGET_S = float(os.environ.get("CUFLYNX_WARM_BUDGET_S", "30"))
+#: The warm-up of the open workflow: its ``path``, ``state`` (building, paused, done,
+#: declined), whether the user asked for ``everything``, and the ``seconds_per_box`` seen.
+_warm: dict = {}
+
+
+def _tab_views(path: str) -> list[str]:
+    """The tabs of a workflow that have a model to build: its steps', then the target."""
+    steps = study_workflow.read_raw(path).get("steps") or []
+    views = [s["id"] for s in steps if isinstance(s, dict) and s.get("id")
+             and not s.get("on_target")
+             and (s.get("kind") or "calibration") not in _NO_TAB_KINDS]
+    return [*views, "target"]
+
+
+def _view_built(view: str) -> bool:
+    key = _view_key(WorkflowViewRequest(view=view))
+    cached = _workflow_view_cache.get(key) if key else None
+    return bool(cached and cached["model_id"] in _models)
+
+
+def _warm_status() -> dict | None:
+    """What the warm-up of the open workflow is doing, the tabs not built yet (``left``),
+    and how long they would take (``predicted_s``) once one box has been timed."""
+    if not _warm or _warm.get("path") != workflow.path:
+        return None
+    try:
+        left = [v for v in _tab_views(_warm["path"]) if not _view_built(v)]
+    except (OSError, ValueError):
+        left = []
+    per_box = _warm.get("seconds_per_box")
+    return {"state": _warm["state"], "left": left, "seconds_per_box": per_box,
+            "predicted_s": round(per_box * len(left), 1) if per_box else None,
+            "budget_s": WARM_BUDGET_S}
+
+
+def _warm_views(everything: bool = False) -> dict | None:
+    """Build every box's study of the open workflow in the background, so a click on a box
+    finds it ready. One at a time, through the same lock a click takes; it stops when
+    another workflow is opened, and a box already built costs nothing. Started whenever
+    the workflow is described.
+
+    The first box built is timed. When the rest would take longer than
+    :data:`WARM_BUDGET_S`, the warm-up stops there (``paused``) and builds no more until
+    the user asks for ``everything`` (``POST /api/workflow/warm-up``). Returns
+    :func:`_warm_status`.
+    """
+    global _warm_thread
+    if os.environ.get("CUFLYNX_WARM_VIEWS", "1") == "0":  # off: the test suite
+        return None
+    if not workflow.loaded or not workflow.output_dir:
+        return None
+    path = workflow.path
+    if _warm.get("path") != path:
+        _warm.clear()
+        _warm.update(path=path, state="building", everything=False, seconds_per_box=None)
+    if everything:
+        _warm["everything"] = True
+    elif _warm["state"] in ("paused", "declined"):
+        return _warm_status()
+    if _warm_thread is not None and _warm_thread.is_alive():
+        return _warm_status()
+    _warm["state"] = "building"
+
+    def warm():
+        try:
+            views = _tab_views(path)
+        except (OSError, ValueError):
+            _warm["state"] = "done"
+            return
+        times: list[float] = []
+        for i, view in enumerate(views):
+            if workflow.path != path:
+                return
+            if _view_built(view):
+                continue
+            if times and not _warm["everything"]:
+                left = [v for v in views[i:] if not _view_built(v)]
+                if sum(times) / len(times) * len(left) > WARM_BUDGET_S:
+                    _warm["state"] = "paused"
+                    return
+            started = time.monotonic()
+            try:
+                _workflow_view(WorkflowViewRequest(view=view))
+            except Exception:  # noqa: BLE001  (a box that cannot load says so when clicked)
+                continue
+            times.append(time.monotonic() - started)
+            _warm["seconds_per_box"] = round(sum(times) / len(times), 2)
+        _warm["state"] = "done"
+
+    _warm_thread = threading.Thread(target=warm, name="workflow-view-warm-up", daemon=True)
+    _warm_thread.start()
+    return _warm_status()
+
+
+class WarmUpRequest(BaseModel):
+    # True: build every tab ahead, however long it takes. False: build none ahead (a
+    # click still builds its own box).
+    everything: bool
+
+
+@app.get("/api/workflow/warm-up")
+def workflow_warm_up_status() -> dict:
+    """What the background build of the open workflow's tabs is doing (:func:`_warm_status`)."""
+    return {"warm_up": _warm_status()}
+
+
+@app.post("/api/workflow/warm-up")
+def workflow_warm_up(req: WarmUpRequest) -> dict:
+    """Build every tab of the open workflow ahead, or none."""
+    if not workflow.loaded:
+        raise HTTPException(status_code=409, detail="no workflow is open")
+    if req.everything:
+        return {"warm_up": _warm_views(everything=True)}
+    if _warm.get("path") == workflow.path:
+        _warm["state"] = "declined"
+    return {"warm_up": _warm_status()}
+
+
 def _view_inputs(view: dict, prefix: str) -> tuple:
-    """``(obs, params)`` of a workflow view, each ``(file name, bytes)`` or None."""
+    """``(obs, params)`` of a workflow view, each ``(file name, bytes)`` or None. Each keeps
+    the step's own file name (``krapivinsky1998_obs_data.json``), so the study shows the files
+    the step names; a name that does not say which it is gets the step's prefix instead, as
+    the archive importer tells them apart by name."""
     obs = params = None
     if view.get("obs_data_path"):
-        obs = (f"{prefix}_obs_data.json", Path(view["obs_data_path"]).read_bytes())
+        path = Path(view["obs_data_path"])
+        name = path.name if "obs" in path.name.lower() else f"{prefix}_obs_data.json"
+        obs = (name, path.read_bytes())
     if view.get("params_for_id_path"):
         path = Path(view["params_for_id_path"])
-        params = (f"{prefix}_params_for_id{path.suffix.lower()}", path.read_bytes())
+        name = (path.name if "param" in path.name.lower()
+                else f"{prefix}_params_for_id{path.suffix.lower()}")
+        params = (name, path.read_bytes())
     return obs, params
+
+
+def _view_model_name(view: dict, step: str) -> str:
+    """The study's name for a workflow view: the step and its model, ``kir: i_K1 ·
+    krapivinsky1998`` (a generated model's own name is the same for every step)."""
+    model = view.get("model") or {}
+    if model.get("module_type"):
+        label = f"{model['module_type']} · {model.get('parameterisation') or ''}".strip(" ·")
+    elif model.get("cellml_model_path") or model.get("external_model_path"):
+        label = Path(model.get("cellml_model_path") or model["external_model_path"]).name
+    elif model.get("module_array"):
+        label = Path(str(model["module_array"])).stem
+    else:
+        label = ""
+    return f"{step}: {label}" if label else step
 
 
 def _load_cellml_view(view: dict, prefix: str) -> dict:
@@ -5252,6 +5936,7 @@ def sensitivity_run(req: SensitivityRequest) -> dict:
         "num_cores": num_cores,
         "python": python_path,
         "settings": _with_engine_dt(req.settings),
+        "workflow_target": req.settings.get("workflow_target"),
         "best_params": best_params,
         "current_params": req.current_params,
         # Global random seed (Settings popup); None => non-deterministic run.
@@ -5513,8 +6198,12 @@ def emulator_train(req: EmulatorTrainRequest) -> dict:
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": _with_engine_dt(req.settings),
+        "workflow_target": req.settings.get("workflow_target"),
         "seed": _analysis_seed,
     }
+    if emulator.busy:
+        raise HTTPException(status_code=409, detail="an emulator training job is already running")
+    config.setdefault("log_preamble", _study_emulation(record, config, configured))
     try:
         job_id = emulator.start(config)
     except RuntimeError as exc:
@@ -5764,6 +6453,7 @@ def uq_run(req: UQRequest) -> dict:
         "num_cores": int(req.settings.get("num_cores", 1) or 1),
         "python": python_path,
         "settings": _with_engine_dt(req.settings),
+        "workflow_target": req.settings.get("workflow_target"),
         "best_params": best_params,
         # Global random seed (Settings popup); None => non-deterministic run.
         "seed": _analysis_seed,

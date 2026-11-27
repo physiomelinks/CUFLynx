@@ -1,5 +1,5 @@
 """The study workflow end to end: real runs through the analysis routes on the
-Lotka-Volterra fixture, each one a step of ``<W>/workflow/calibration_workflow.json``.
+Lotka-Volterra fixture, each one a step of ``<W>/workflow/study/calibration_workflow.json``.
 
 Small budgets, so the whole file runs in a few minutes: a short GA, 16 Sobol samples, a
 local analysis by finite differences, a Laplace approximation and a 12-step MCMC chain.
@@ -64,7 +64,7 @@ def _run(client, kind: str, payload: dict) -> tuple[dict, list]:
 
 
 def _steps(work: Path) -> list[dict]:
-    raw = json.loads((work / "workflow" / "calibration_workflow.json").read_text())
+    raw = json.loads((work / "workflow" / "study" / "calibration_workflow.json").read_text())
     return raw["steps"]
 
 
@@ -122,8 +122,8 @@ def test_every_run_is_a_step_of_one_study_workflow(client, requires_simulation,
     assert band["available"] and band["labels"], band
 
     # the calibrated values beside the CellML target, written by CA
-    target = (work / "workflow" / json.loads(
-        (work / "workflow" / "calibration_workflow.json").read_text())["target"][
+    target = (work / "workflow" / "study" / json.loads(
+        (work / "workflow" / "study" / "calibration_workflow.json").read_text())["target"][
         "cellml_model_path"]).resolve()
     assert (target.parent / f"{target.stem}_calibrated_parameters.json").is_file()
     assert (target.parent / f"{target.stem}_calibrated.cellml").is_file()
@@ -157,7 +157,7 @@ def test_every_run_is_a_step_of_one_study_workflow(client, requires_simulation,
     # the Workflow tab has the study workflow open, with every step done
     described = client.get("/api/workflow").json()
     assert described["loaded"] and described["path"] == str(
-        work / "workflow" / "calibration_workflow.json")
+        work / "workflow" / "study" / "calibration_workflow.json")
     assert described["provenance"].get("svg")
     state = described["status"]["steps"]
     assert {s for s, st in state.items() if st["status"] == "done" and not st["stale"]} == {
@@ -202,6 +202,6 @@ def test_an_external_python_calibration_is_a_step_with_an_external_target(
     assert 0.05 <= cal["best_params"]["heat/k"] <= 1.0
     (step,) = _steps(work)
     assert step["id"] == "calibration-1"
-    raw = json.loads((work / "workflow" / "calibration_workflow.json").read_text())
+    raw = json.loads((work / "workflow" / "study" / "calibration_workflow.json").read_text())
     assert "external_model_path" in raw["target"] and step["model"] == raw["target"]
     assert (work / "workflows" / "study" / "provenance.svg").is_file()

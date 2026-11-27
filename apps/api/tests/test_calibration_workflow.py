@@ -77,8 +77,10 @@ def _fake_ca(monkeypatch, calls=None, plan_error=None, refuse=None, model_error=
 
     def workflow_model(path, view, output_dir, work_dir, module_library_dirs=None):
         calls.append(("model", view, output_dir))
-        if model_error:
+        if isinstance(model_error, BaseException):
             raise model_error
+        if model_error:
+            model_error()
         return {"view": view, "kind": "step", "model": WORKFLOW["steps"][0]["model"],
                 "step_id": view, "place": "A",
                 "model_path": str(LV_MODEL_PATH), "obs_data_path": str(LV_OBS_DATA_PATH),
@@ -231,6 +233,141 @@ def test_a_tab_loads_as_a_study(client, monkeypatch, workflow_file, tmp_path):
     assert ("model", "fit_a", str(tmp_path / "workflows" / "demo")) in calls
 
 
+def test_clicking_back_to_a_tab_reuses_its_study_until_a_result_changes(
+        client, monkeypatch, workflow_file, tmp_path):
+    """Generating a step's model takes CA seconds (a Myokit compile to validate it), and a
+    new study recompiles the live simulation: a tab opened again with nothing changed is
+    the study it was. A step result written since makes it a new one."""
+    calls = _fake_ca(monkeypatch)
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    run_dir = tmp_path / "workflows" / "demo"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    made = lambda: sum(1 for c in calls if c[:2] == ("model", "fit_a"))  # noqa: E731
+    first = client.post("/api/workflow/view", json={"view": "fit_a"}).json()
+    again = client.post("/api/workflow/view", json={"view": "fit_a"}).json()
+    assert made() == 1 and again["model_id"] == first["model_id"]
+    (run_dir / "fit_a").mkdir(exist_ok=True)
+    (run_dir / "fit_a" / "step_result.json").write_text('{"status": "done"}')
+    rerun = client.post("/api/workflow/view", json={"view": "fit_a"}).json()
+    assert made() == 2 and rerun["model_id"] != first["model_id"]
+    # the workflow file edited: also a new one
+    workflow_file.write_text(workflow_file.read_text() + "\n")
+    client.post("/api/workflow/view", json={"view": "fit_a"})
+    assert made() == 3
+
+
+@pytest.mark.parametrize("takes_validate", [True, False])
+def test_a_tab_skips_cas_validation_run_where_ca_can(monkeypatch, tmp_path, takes_validate):
+    """CA #693: workflow_model(validate=False) skips the trial compile a tab does not need
+    (the live simulation compiles the model next); a CA without the keyword gets none."""
+    import workflow_manager as wm  # noqa: PLC0415
+
+    seen = {}
+    if takes_validate:
+        def workflow_model(path, view, output_dir, work_dir, module_library_dirs=None,
+                           validate=True):
+            seen.update(validate=validate)
+            return {}
+    else:
+        def workflow_model(path, view, output_dir, work_dir, module_library_dirs=None):
+            seen.update(validate="not asked")
+            return {}
+    monkeypatch.setattr(wm, "ca_workflow", lambda name: workflow_model)
+    manager = wm.WorkflowManager()
+    manager.path, manager.output_dir = str(tmp_path / "w.json"), str(tmp_path / "run")
+    manager.view("fit_a", str(tmp_path / "work"))
+    assert seen["validate"] == (False if takes_validate else "not asked")
+
+
+def test_a_workflow_opened_builds_its_tabs_in_the_background(
+        client, monkeypatch, workflow_file, tmp_path):
+    """Once a workflow is open, every box's study is built in the background, so a click
+    finds it ready; a step with no model of its own is not built."""
+    import main  # noqa: PLC0415
+
+    calls = _fake_ca(monkeypatch)
+    (tmp_path / "workflows" / "demo").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUFLYNX_WARM_VIEWS", "1")
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    main._warm_thread.join(timeout=60)
+    built = sorted({c[1] for c in calls if c[0] == "model"})
+    assert "fit_a" in built and "target" in built
+    # a click on a built box generates nothing more
+    before = len([c for c in calls if c[0] == "model"])
+    client.post("/api/workflow/view", json={"view": "fit_a"})
+    assert len([c for c in calls if c[0] == "model"]) == before
+
+
+def test_a_workflow_never_run_keeps_its_built_tabs(client, monkeypatch, workflow_file, tmp_path):
+    """No run directory yet: a box is still built once, not on every click (nor thrown
+    away by the background build)."""
+    calls = _fake_ca(monkeypatch)
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    assert not (tmp_path / "workflows" / "demo").exists()
+    for _ in range(2):
+        assert client.post("/api/workflow/view", json={"view": "fit_a"}).status_code == 200
+    assert _models_built(calls) == ["fit_a"]
+
+
+def _models_built(calls):
+    return [c[1] for c in calls if c[0] == "model"]
+
+
+@pytest.fixture
+def slow_warm_up(client, monkeypatch, workflow_file, tmp_path):
+    """A workflow whose boxes take longer to build than the warm-up may spend unasked."""
+    import main  # noqa: PLC0415
+
+    calls = _fake_ca(monkeypatch)
+    (tmp_path / "workflows" / "demo").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CUFLYNX_WARM_VIEWS", "1")
+    monkeypatch.setattr(main, "WARM_BUDGET_S", 0.0)
+    monkeypatch.setattr(main, "_warm", {})
+    r = client.post("/api/workflow/load",
+                    json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    assert r.json()["warm_up"]["state"] == "building"
+    main._warm_thread.join(timeout=60)
+    return calls
+
+
+def test_a_slow_workflow_builds_one_box_and_asks_about_the_rest(client, slow_warm_up):
+    import main  # noqa: PLC0415
+
+    assert _models_built(slow_warm_up) == ["fit_a"]
+    status = client.get("/api/workflow/warm-up").json()["warm_up"]
+    assert status["state"] == "paused"
+    assert status["left"] == ["rest", "target"]
+    assert status["predicted_s"] == round(2 * status["seconds_per_box"], 1)
+    # describing the workflow again does not start building again
+    assert client.get("/api/workflow").json()["warm_up"]["state"] == "paused"
+    if main._warm_thread.is_alive():
+        main._warm_thread.join(timeout=60)
+    assert _models_built(slow_warm_up) == ["fit_a"]
+
+
+def test_build_all_builds_every_box_however_long(client, slow_warm_up):
+    import main  # noqa: PLC0415
+
+    r = client.post("/api/workflow/warm-up", json={"everything": True})
+    assert r.status_code == 200, r.text
+    main._warm_thread.join(timeout=60)
+    assert _models_built(slow_warm_up) == ["fit_a", "rest", "target"]
+    status = client.get("/api/workflow/warm-up").json()["warm_up"]
+    assert status["state"] == "done" and status["left"] == []
+
+
+def test_build_none_leaves_each_box_to_its_click(client, slow_warm_up):
+    r = client.post("/api/workflow/warm-up", json={"everything": False})
+    assert r.json()["warm_up"]["state"] == "declined"
+    client.post("/api/workflow/view", json={"view": "rest"})
+    status = client.get("/api/workflow/warm-up").json()["warm_up"]
+    assert status["left"] == ["target"]
+    assert _models_built(slow_warm_up) == ["fit_a", "rest"]
+
+
 def test_a_tab_with_unset_parameters_names_the_step_and_them(
         client, monkeypatch, workflow_file, tmp_path):
     _fake_ca(monkeypatch, model_error=UnsetParametersError("sel", ["C/x", "C/y"]))
@@ -250,6 +387,35 @@ def test_any_other_refusal_stays_a_plain_message(client, monkeypatch, workflow_f
                 json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
     r = client.post("/api/workflow/view", json={"view": "sel"})
     assert r.status_code == 422 and r.json()["detail"] == "no such step"
+
+
+def _ca_parser_exits():
+    """CA's ModelParsers on a units mismatch: print the reason, then exit()."""
+    print("")
+    print("ERROR: units of m3 in the parameters file does not \n"
+          "match with units of dimensionless in module_config.json file \n"
+          "for param Delta_q, exiting \n")
+    exit()
+
+
+def test_ca_exiting_while_it_builds_a_tab_is_that_tab_s_error(
+        client, monkeypatch, workflow_file, tmp_path):
+    """CA's parsers exit() on a bad model: the tab says why, and the app keeps running."""
+    _fake_ca(monkeypatch, model_error=_ca_parser_exits)
+    client.post("/api/workflow/load",
+                json={"path": str(workflow_file), "config_outputs_dir": str(tmp_path)})
+    r = client.post("/api/workflow/view", json={"view": "fit_a"})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == (
+        "ERROR: units of m3 in the parameters file does not match with units of "
+        "dimensionless in module_config.json file for param Delta_q, exiting")
+    assert client.get("/api/health").status_code == 200
+
+
+def test_ca_exiting_without_a_word_is_still_named():
+    import workflow_manager as wm  # noqa: PLC0415
+
+    assert "without saying why" in wm.exit_reason("Running...\n")
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +779,26 @@ def test_the_runner_reports_ca_s_unset_parameters(monkeypatch, tmp_path, capsys)
     assert any(ln.startswith(workflow_runner.FAIL_MARKER) for ln in lines)
     # any other error is only the failure line
     assert workflow_runner.unset_parameters(ValueError("x")) is None
+
+
+@pytest.mark.parametrize("overlap", [None, "the target is given alpha by 'a' and 'b'"])
+def test_the_runner_writes_the_calibrated_parameters_only_where_ca_merges_the_target(
+        monkeypatch, capsys, overlap):
+    """CA #685 refuses write_calibrated while two steps that do not take from each other give
+    the target one parameter (its plan's target_overlap), but runs a step of it alone; so
+    the run goes ahead without the write and says why."""
+    import workflow_runner
+
+    calls = []
+    fakes = {"plan_workflow": lambda path, module_library_dirs: {"target_overlap": overlap},
+             "run_calibration_workflow": lambda path, **kw: calls.append(kw) or {"ok": True}}
+    monkeypatch.setattr(workflow_runner, "ensure_ca_path", lambda: None)
+    monkeypatch.setattr(workflow_runner, "ca_from", lambda module, name: fakes[name])
+    workflow_runner.run({"workflow": "w.json", "output_dir": "out", "only": "b",
+                         "write_calibrated": True})
+    assert calls[0].get("write_calibrated", False) is (overlap is None)
+    out = capsys.readouterr().out
+    assert ("not written beside the target" in out) is (overlap is not None)
 
 
 def test_one_run_at_a_time_and_it_can_be_cancelled(client, opened, tmp_path):

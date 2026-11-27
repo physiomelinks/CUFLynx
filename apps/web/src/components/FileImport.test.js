@@ -173,6 +173,15 @@ describe('FileImport', () => {
     },
   )
 
+  it("highlights the obs_data box while a new workflow step has none", async () => {
+    const wrapper = mount(FileImport, { props: { needsObsData: true, modelId: 'm1' }, global: { stubs } })
+    expect(wrapper.find('[data-testid="obs-drop"]').classes()).toContain('attention')
+    expect(wrapper.find('[data-testid="obs-needed"]').text()).toContain('needs its obs_data')
+    await wrapper.setProps({ needsObsData: false })
+    expect(wrapper.find('[data-testid="obs-drop"]').classes()).not.toContain('attention')
+    expect(wrapper.find('[data-testid="obs-needed"]').exists()).toBe(false)
+  })
+
   it('an OMEX dropped as a .zip is loaded as an OMEX', async () => {
     inspectWorkingDirZip.mockResolvedValue({ kind: 'omex' })
     uploadOmex.mockResolvedValue({ model_id: 'm1', variable_count: 3, warnings: [] })

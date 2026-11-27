@@ -23,6 +23,9 @@ os.environ["CUFLYNX_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cuflynx-test-config-
 # The analysis routes' own tests run them on their direct runners; the study-workflow
 # tests (test_study_workflow*.py) turn it back on with the ``study_workflow_on`` fixture.
 os.environ["CUFLYNX_STUDY_WORKFLOW"] = "0"
+# No background warm-up of a workflow's tabs: tests count CA calls, and a thread would
+# outlive them. test_calibration_workflow turns it on where it is the subject.
+os.environ["CUFLYNX_WARM_VIEWS"] = "0"
 
 import calibration as calibration_mod  # noqa: E402
 import emulator as emulator_mod  # noqa: E402

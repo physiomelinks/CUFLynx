@@ -2,6 +2,34 @@ import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import AnalysisPanel from './AnalysisPanel.vue'
 
+describe('AnalysisPanel sections fold', () => {
+  const sections = (w) => w.findAll('section.analysis-section').map((s) => ({
+    title: s.find('h2').text().replace(/^[▾▸]\s*/, '').split(' ')[0],
+    folded: 'folded' in s.element.dataset,
+  }))
+
+  it('every section is open when no workflow step is selected, and each heading folds it', async () => {
+    const w = mount(AnalysisPanel)
+    expect(sections(w).every((s) => !s.folded)).toBe(true)
+    await w.find('section.analysis-section h2').trigger('click')
+    expect(sections(w)[0].folded).toBe(true)
+  })
+
+  it('lists its sections in the order of the left tabs (Finbar, 2026-11-20)', () => {
+    // Surrogate (Emulator), Sensitivity, Calibration, UQ
+    expect(sections(mount(AnalysisPanel)).map((s) => s.title)).toEqual(
+      ['Emulator', 'Sensitivity', 'Calibration', 'UQ'])
+  })
+
+  it("opens only the selected step's section", async () => {
+    const w = mount(AnalysisPanel, { props: { focus: 'uq' } })
+    const open = sections(w).filter((s) => !s.folded).map((s) => s.title)
+    expect(open).toEqual(['UQ'])
+    await w.setProps({ focus: 'calibration' })
+    expect(sections(w).filter((s) => !s.folded).map((s) => s.title)).toEqual(['Calibration'])
+  })
+})
+
 const UQ_PARAMS = [
   {
     qname: 'Lotka_Volterra_module/alpha',

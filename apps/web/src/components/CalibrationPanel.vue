@@ -200,6 +200,20 @@ function buildSettings() {
   }
 }
 
+/**
+ * Fill the panel from a workflow step's settings (lib/workflowTarget panelSettings), when
+ * the step is clicked in the Workflow view: a key the panel holds is set, any other is a
+ * method option (CA's schema seeds only options that have no value, so these stay).
+ */
+function applySettings(values) {
+  for (const [k, v] of Object.entries(values ?? {})) {
+    if (v === undefined) continue
+    if (k in settings) settings[k] = v
+    else optionValues[k] = v
+  }
+}
+defineExpose({ applySettings })
+
 // Surface live settings upward so other panels (e.g. sensitivity "run calibration
 // first") reuse the user's calibration configuration.
 watch([settings, optionValues], () => emit('change', buildSettings()), {

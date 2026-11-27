@@ -64,6 +64,23 @@ describe('WorkflowPanel', () => {
     expect(panel.emitted('select')).toEqual([['screen']])
   })
 
+  it('asks before building the rest of a slow workflow\'s tabs', async () => {
+    const warmUp = { state: 'paused', left: ['rest', 'target'], seconds_per_box: 35,
+                     predicted_s: 70, budget_s: 30 }
+    const wrapper = mountPanel({ described, tabs, warmUp })
+    const note = wrapper.find('[data-testid="workflow-warm-up"]')
+    expect(note.text()).toContain('about 35 s')
+    expect(note.text()).toContain('2 not built yet would take about 70 s')
+    await wrapper.find('[data-testid="workflow-warm-up-all"]').trigger('click')
+    await wrapper.find('[data-testid="workflow-warm-up-none"]').trigger('click')
+    expect(wrapper.emitted('build-tabs')).toEqual([[true], [false]])
+
+    await wrapper.setProps({ warmUp: { ...warmUp, predicted_s: 400 } })
+    expect(wrapper.find('[data-testid="workflow-warm-up"]').text()).toContain('about 7 min')
+    await wrapper.setProps({ warmUp: { ...warmUp, state: 'declined' } })
+    expect(wrapper.find('[data-testid="workflow-warm-up"]').exists()).toBe(false)
+  })
+
   it('exports the workflow as an archive, offered as a plain link', async () => {
     const panel = mountPanel({ described, tabs, workingDir: '/out' })
     await panel.find('[data-testid="workflow-export"]').trigger('click')
@@ -132,14 +149,13 @@ describe('WorkflowPanel', () => {
     expect(box({ module_type: 'heart', parameterisation: 'default' })).toBe(false)
   })
 
-  it("shows the run's provenance diagram and links it and its graph as plain links", () => {
+  it("links the run's provenance diagram and its graph, without drawing the diagram", () => {
     const provenance = { svg: '/api/workflow/provenance/provenance.svg?v=1',
                          graph: '/api/workflow/provenance/provenance_graph.json?v=1' }
     expect(mountPanel({ described, tabs }).find('[data-testid="workflow-provenance"]').exists())
       .toBe(false)
     const panel = mountPanel({ described, tabs, provenance })
-    expect(panel.find('[data-testid="workflow-provenance-svg"]').attributes('src'))
-      .toBe(provenance.svg)
+    expect(panel.find('img').exists()).toBe(false)
     for (const id of ['workflow-provenance-svg-link', 'workflow-provenance-graph']) {
       const link = panel.find(`[data-testid="${id}"]`)
       // a real link the user clicks: never a scripted open or a blob: URL
@@ -155,6 +171,14 @@ describe('WorkflowPanel', () => {
     const panel = mountPanel({ described: { ...described, plan_error: 'no lin_a' }, tabs })
     expect(panel.find('[data-testid="workflow-plan-error"]').text()).toContain('no lin_a')
     expect(panel.find('[data-testid="workflow-run"]').attributes('disabled')).toBeDefined()
+  })
+
+  it("shows CA's warnings about the workflow, which do not stop a run (CA's refusals do)", () => {
+    const problem = 'calibration workflow "study": 1 parameter(s) of m are calibrated by more ' +
+      "than one step, and the later step replaces the earlier: \"m/a\" by 'c-1', then 'c-2'"
+    const panel = mountPanel({ described: { ...described, problems: [problem] }, tabs })
+    expect(panel.find('[data-testid="workflow-problem"]').text()).toContain("'c-1', then 'c-2'")
+    expect(panel.find('[data-testid="workflow-run"]').attributes('disabled')).toBeUndefined()
   })
 
   it('shows progress and lets a run be cancelled', async () => {

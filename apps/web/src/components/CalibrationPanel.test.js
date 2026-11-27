@@ -561,3 +561,29 @@ describe('tour anchors', () => {
     expect(wrapper.find('[data-testid="calib-settings"]').exists()).toBe(true)
   })
 })
+
+describe('CalibrationPanel: a workflow step clicked in the Workflow view', () => {
+  it('fills the method, its options and the start point, and runs with them', async () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        canRun: true,
+        defaults: {
+          methods: [
+            { value: 'genetic_algorithm', label: 'GA', gradient_based: false,
+              options: [{ name: 'num_calls_to_function', type: 'int', default: 100 }] },
+            { value: 'sp_minimize', label: 'GD', gradient_based: true,
+              options: [{ name: 'max_iterations', type: 'int', default: 20 }] },
+          ],
+        },
+      },
+      global: { stubs },
+    })
+    wrapper.vm.applySettings({ param_id_method: 'sp_minimize', max_iterations: 7,
+                               start_from: 'current', DEBUG: false, unknown_key: undefined })
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    expect(wrapper.emitted('run').at(-1)[0]).toMatchObject({
+      param_id_method: 'sp_minimize', max_iterations: 7, start_from: 'current',
+    })
+  })
+})

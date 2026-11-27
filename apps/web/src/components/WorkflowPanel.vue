@@ -32,6 +32,8 @@ const props = defineProps({
   offered: { type: Object, default: null },
   // A step's parameters nothing gives a value ({step_id, names}), for its protocol to set.
   unset: { type: Object, default: null },
+  // The background build of the tabs (useWorkflow.warmUp): paused asks whether to go on.
+  warmUp: { type: Object, default: null },
   workingDir: { type: String, default: '' },
   moduleLibraryDirs: { type: Array, default: () => [] },
   mpiexecAvailable: { type: Boolean, default: true },
@@ -49,7 +51,15 @@ const emit = defineEmits([
   'edit-input',
   // {stepId, role, file}: give a step a file of its own
   'pick-input',
+  // true: build every tab ahead; false: none (a click builds its own)
+  'build-tabs',
 ])
+
+/** Seconds as "35 s" or "6 min". */
+function duration(seconds) {
+  if (!(seconds > 0)) return 'a moment'
+  return seconds < 90 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`
+}
 
 const path = ref('')
 const numCores = ref(1)
@@ -91,6 +101,9 @@ const selectedStep = computed(() =>
 const canRun = computed(
   () => loaded.value && !props.described?.plan_error && !running.value && !props.busy,
 )
+// What CA warns about the workflow itself (steps that give one parameter the same box): CA's
+// own message, shown as a warning. What CA refuses is plan_error, which stops the run.
+const problems = computed(() => props.described?.problems ?? [])
 const coresInvalid = computed(() => numCores.value > 1 && !props.mpiexecAvailable)
 
 // The target as CA reads it, and whether it is an external Python model.
@@ -166,6 +179,59 @@ const progressText = computed(() => {
 
 <template>
   <div class="workflow-panel" data-testid="workflow-panel">
+    <div class="wf-open-bar" data-testid="workflow-open-bar">
+      <slot name="header" />
+      <div class="wf-row wf-open-controls">
+        <InputText
+          id="wf-path"
+          v-model="path"
+          size="small"
+          class="wf-grow"
+          placeholder="Open a workflow file: /path/to/calibration_workflow.json"
+          data-testid="workflow-path"
+          @keyup.enter="openPath()"
+        />
+        <Button
+          icon="pi pi-folder-open"
+          size="small"
+          text
+          title="Browse for a calibration_workflow.json"
+          @click="browseFile = true"
+        />
+        <Button
+          label="Open"
+          size="small"
+          :disabled="!path.trim() || busy || running"
+          data-testid="workflow-open"
+          @click="openPath()"
+        />
+        <Button
+          icon="pi pi-upload"
+          size="small"
+          text
+          title="Upload a workflow file"
+          :disabled="running"
+          @click="fileInput?.click()"
+        />
+        <input
+          ref="fileInput"
+          type="file"
+          accept=".json,application/json"
+          hidden
+          data-testid="workflow-upload"
+          @change="onFile"
+        />
+        <Button
+          icon="pi pi-history"
+          size="small"
+          text
+          title="Reopen a workflow run: a directory a workflow ran into holds the workflow and every step's results"
+          :disabled="running"
+          data-testid="workflow-reopen-run"
+          @click="browseRun = true"
+        />
+      </div>
+    </div>
     <template v-if="!loaded">
       <p class="wf-intro">
         A <strong>calibration workflow</strong> runs calibrations in order -- each a model,
@@ -196,57 +262,6 @@ const progressText = computed(() => {
           @click="openPath(offered.path)"
         />
       </Message>
-      <label class="wf-label" for="wf-path">Workflow file</label>
-      <div class="wf-row">
-        <InputText
-          id="wf-path"
-          v-model="path"
-          size="small"
-          class="wf-grow"
-          placeholder="/path/to/workflow.json"
-          data-testid="workflow-path"
-          @keyup.enter="openPath()"
-        />
-        <Button
-          icon="pi pi-folder-open"
-          size="small"
-          text
-          title="Browse for a calibration_workflow.json"
-          @click="browseFile = true"
-        />
-        <Button
-          label="Open"
-          size="small"
-          :disabled="!path.trim() || busy"
-          data-testid="workflow-open"
-          @click="openPath()"
-        />
-      </div>
-      <div class="wf-row">
-        <Button
-          label="Upload a workflow file"
-          icon="pi pi-upload"
-          size="small"
-          text
-          @click="fileInput?.click()"
-        />
-        <input
-          ref="fileInput"
-          type="file"
-          accept=".json,application/json"
-          hidden
-          data-testid="workflow-upload"
-          @change="onFile"
-        />
-        <Button
-          label="Reopen a workflow run"
-          icon="pi pi-history"
-          size="small"
-          text
-          title="A directory a workflow ran into: it holds the workflow and every step's results"
-          @click="browseRun = true"
-        />
-      </div>
       <p class="wf-hint">
         Runs go to <code>{{ workingDir ? `${workingDir}/workflows/<name>` : 'the working dir, once one is set' }}</code>.
       </p>
@@ -278,6 +293,15 @@ const progressText = computed(() => {
       >
         {{ described.plan_error }}
       </Message>
+      <Message
+        v-for="problem in problems"
+        :key="problem"
+        severity="warn"
+        :closable="false"
+        data-testid="workflow-problem"
+      >
+        {{ problem }}
+      </Message>
 
       <Message
         v-if="unset"
@@ -297,6 +321,32 @@ const progressText = computed(() => {
         />
       </Message>
 
+      <Message
+        v-if="warmUp?.state === 'paused' && warmUp.left?.length"
+        severity="info"
+        :closable="false"
+        data-testid="workflow-warm-up"
+      >
+        A box takes about {{ duration(warmUp.seconds_per_box) }} to build here, so the
+        {{ warmUp.left.length }} not built yet would take about
+        {{ duration(warmUp.predicted_s) }}. Until then each box is built when you click it.
+        <Button
+          label="Build all now"
+          size="small"
+          text
+          data-testid="workflow-warm-up-all"
+          @click="emit('build-tabs', true)"
+        />
+        <Button
+          label="Only when clicked"
+          size="small"
+          text
+          data-testid="workflow-warm-up-none"
+          @click="emit('build-tabs', false)"
+        />
+      </Message>
+
+      <slot name="steps">
       <ol class="wf-steps">
         <li
           v-for="step in steps"
@@ -355,6 +405,7 @@ const progressText = computed(() => {
           </div>
         </li>
       </ol>
+      </slot>
 
       <div class="wf-run">
         <label class="wf-label" for="wf-cores">Cores</label>
@@ -444,19 +495,8 @@ const progressText = computed(() => {
 
       <div v-if="provenance" class="wf-provenance" data-testid="workflow-provenance">
         <h5>How every value was set</h5>
-        <a
-          v-if="provenance.svg"
-          :href="provenance.svg"
-          target="_blank"
-          rel="noopener"
-          title="Open the diagram on its own"
-        >
-          <img
-            :src="provenance.svg"
-            alt="The run's provenance: each step and the values it set"
-            data-testid="workflow-provenance-svg"
-          />
-        </a>
+        <!-- CA's diagram is not drawn here (the chart above shows the workflow); it opens on
+             its own from the link, beside its graph -->
         <p class="wf-hint">
           <a
             v-if="provenance.svg"
@@ -595,6 +635,19 @@ const progressText = computed(() => {
 .wf-grow {
   flex: 1;
   min-width: 10rem;
+}
+.wf-open-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.4rem;
+  margin-bottom: 0.4rem;
+  border-bottom: 1px solid var(--p-content-border-color, #444);
+}
+.wf-open-controls {
+  flex: 1;
+  min-width: 18rem;
 }
 .wf-header {
   display: flex;
