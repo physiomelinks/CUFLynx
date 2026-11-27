@@ -53,7 +53,10 @@ dependencies = [
     #     older engine rejects those as unknown keys.
     # So a 0.7.0 app on a 0.7.2 engine writes files its own engine refuses. The floor is
     # what stops pip resolving that combination.
-    "libcuflynx>=0.7.3",
+    #
+    # 0.8.0 raises it again: 0.7.3 pins libcellml<0.7, which cannot install beside the
+    # libcellml>=0.7.2 below.
+    "libcuflynx>=0.8.0",
     # Myokit JIT-compiles each model to a CPython extension at run time, inside the
     # frozen process, and that compile uses setuptools' build_ext command. Python <=3.11
     # venvs happen to ship setuptools, which is why relying on it has worked so far; 3.12
@@ -174,7 +177,7 @@ analysis = [
 full = [
     # Same floor as the base dependency above, for the same reason -- the full bundle
     # ships the same engine, so it must not be allowed to resolve an older one.
-    "libcuflynx[emulation,uq]>=0.7.3",
+    "libcuflynx[emulation,uq]>=0.8.0",
     # Surrogate models -- CA's do_emulation / use_emulator, and the Emulator tab's live
     # prediction line, which currently needs a user-supplied interpreter.
     "autoemulate>=2.1,<3",

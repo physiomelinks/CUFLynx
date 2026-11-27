@@ -184,3 +184,26 @@ def test_a_devel_marker_names_the_release_it_is_ahead_of():
     line = "          ref: " + "a" * 40 + "  # libcuflynx v0.7.3+devel\n"
     assert _PINNED_RELEASE.findall(line) == [("a" * 40, "0.7.3")]
     assert not _PINNED_RELEASE.findall(line.replace("+devel", "+next"))
+
+
+def _unit_tier_pins_a_devel_commit(ci_text):
+    return bool(re.search(r"#\s*libcuflynx\s+v\d+(?:\.\d+)*\+devel\s*$", ci_text, re.MULTILINE))
+
+
+def test_a_released_pin_leaves_no_ca_devel_install():
+    """Release prep installs libcuflynx from CA `devel` in integration.yml beside the
+    unit tier's `+devel` pin. Once that pin is a release, the `@devel` installs have to go
+    too: left behind, the integration tier keeps testing whatever CA `devel` has become
+    instead of the release the app declares."""
+    if _unit_tier_pins_a_devel_commit((WORKFLOW_DIR / "ci.yml").read_text()):
+        return  # release prep: CA devel is what is under test
+    leftovers = [f"{wf}:{job}" for wf, job, ref in _ca_git_installs() if ref == "devel"]
+    assert not leftovers, (
+        f"ci.yml pins a libcuflynx release, but these jobs still install CA @devel: "
+        f"{leftovers}. Drop them so pip resolves the release from PyPI."
+    )
+
+
+def test_a_devel_marker_is_told_apart_from_a_release():
+    assert _unit_tier_pins_a_devel_commit("  ref: " + "a" * 40 + "  # libcuflynx v0.8.0+devel\n")
+    assert not _unit_tier_pins_a_devel_commit("  ref: " + "a" * 40 + "  # libcuflynx v0.8.0\n")
