@@ -1,0 +1,87 @@
+{
+  "about": "The settings each left-hand tab shows under Advanced settings. Every setting not listed here is a standard setting, so an option circulatory_autogen adds appears as a standard one until it is listed. 'ca': CA's option names (its schemas: PARAM_ID_METHODS options, ANALYSIS_OPTIONS); a test checks each is still one of CA's. 'cuflynx': this app's own fields on that tab.",
+  "calibration": {
+    "ca": [
+      "objective_function",
+      "cost_convergence",
+      "use_relative_cost_tolerance",
+      "relative_cost_tolerance",
+      "num_elite",
+      "num_survivors",
+      "num_mutations_per_survivor",
+      "num_cross_breed",
+      "start_sampling",
+      "include_init_point",
+      "fd_step",
+      "no_new_starts_on_convergence",
+      "convergence_cluster_tol_frac"
+    ],
+    "cuflynx": [
+      "DEBUG"
+    ]
+  },
+  "sensitivity": {
+    "ca": [
+      "jacobian_points",
+      "jacobian_location",
+      "jacobian_scheme",
+      "jacobian_step",
+      "jacobian_check_steps"
+    ],
+    "cuflynx": [
+      "DEBUG"
+    ]
+  },
+  "uq": {
+    "ca": [
+      "num_walkers",
+      "posterior_predictive",
+      "num_tune",
+      "pymc_method",
+      "num_samples",
+      "posterior_predictive_samples",
+      "chain_save_every"
+    ],
+    "cuflynx": [
+      "DEBUG"
+    ]
+  },
+  "emulator": {
+    "ca": [
+      "emulator_dir",
+      "model_serialiser",
+      "num_stages",
+      "log_scale_params",
+      "random_seed",
+      "test_fraction",
+      "n_splits",
+      "n_iter",
+      "classifier_n_iter",
+      "out_of_bounds",
+      "fd_rel_step"
+    ],
+    "cuflynx": [
+      "sampling_stages"
+    ]
+  },
+  "identifiability": {
+    "ca": [
+      "sub_method",
+      "optimiser_options"
+    ],
+    "cuflynx": []
+  },
+  "reduction": {
+    "ca": [
+      "criterion",
+      "min_mode_std",
+      "variance_fraction",
+      "min_index",
+      "redundancy_check",
+      "redundancy_statistic",
+      "redundancy_converged_only",
+      "redundancy_convergence_tol"
+    ],
+    "cuflynx": []
+  }
+}
