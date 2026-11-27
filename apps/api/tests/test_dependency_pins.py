@@ -4,7 +4,7 @@ The frozen desktop bundle is built from a clean resolve of `apps/api/pyproject.t
 while developer machines keep whatever they installed before. A pin that disagrees
 with what circulatory_autogen needs therefore breaks only the shipped binary
 (v0.1.0 shipped with libcellml resolved past CA's bound and every Python-backend
-generation failing). CI's unit tier doesn't import libcellml at all.
+generation failing).
 
 These tests are deliberately in the *unit* tier (no libcellml import required), so
 they run everywhere the build does.
@@ -33,6 +33,20 @@ def test_libcellml_floor_is_0_7_2():
     exponent, so models with imported units fail with a units mismatch. The bundle is
     built from a clean resolve of pyproject.toml, so the floor is what ships."""
     assert _requirement("libcellml") == "libcellml>=0.7.2"
+
+
+def test_the_unit_tier_installs_what_ca_workflow_planning_imports():
+    """CA's workflow planner reads a CellML target's constants with libcellml and
+    imports its solver wrappers (scipy), so the workflow editor and view tests in the
+    unit tier need both. Without them in ci.yml's unit install those tests fail there
+    with "No module named ..."; below the floor they would test a libcellml the app
+    never ships."""
+    ci = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "ci.yml").read_text()
+    install = re.search(r"name: Install unit-test deps\s+run: (.*)", ci)
+    assert install, "no 'Install unit-test deps' step in ci.yml"
+    packages = install.group(1).split()
+    assert f'"{_requirement("libcellml")}"' in packages
+    assert "scipy" in packages
 
 
 def test_libcellml_pin_matches_circulatory_autogen():

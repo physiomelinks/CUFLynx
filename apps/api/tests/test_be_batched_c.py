@@ -175,6 +175,9 @@ def test_live_runs_get_the_solvers_step_defaults_and_a_build_cache(fake_fields, 
     whatever is absent: the engine hands it the solver's own defaults first, and the folder
     under the user's cache to keep the C builds in."""
     monkeypatch.setattr(engine_mod, "solver_build_cache_dir", lambda solver: tmp_path / solver)
+    # cellml taken as runnable here: without myokit and with scipy, the live path
+    # would fall back to python/solve_ivp and never reach BE_batched_c.
+    monkeypatch.setattr(engine_mod, "backend_importable", lambda model_type: True)
     seen = {}
 
     def runner_factory(**kwargs):
