@@ -89,8 +89,8 @@ jobs:
           # CUFLynx CI. It must never go back before the merge of circulatory_autogen#495
           # (the first CA carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers,
           # which this app delegates every .mmt and .model conversion to with no local
-          # fallback). This is the merge of the libcuflynx 0.8.0 release
-          # (circulatory_autogen#726).
+          # fallback). This is master at the libcuflynx v0.8.0 tag: the release
+          # (circulatory_autogen#726) plus #728, the commit PyPI's 0.8.0 is built from.
           #
           # The `libcuflynx v<X.Y.Z>` marker is not decoration: it is the only
           # offline record of *which release* this SHA is, and
@@ -106,7 +106,7 @@ jobs:
           # `@devel` too. When libcuflynx is released, pin the release's merge commit
           # with a plain `v<X.Y.Z>` marker and drop those `@devel` installs, so the
           # integration tier resolves the release from PyPI.
-          ref: 14a0f6f72649e82a58e1344bece0689fdba53aea  # libcuflynx v0.8.0
+          ref: e8fd03a8a3ad59dc8aa0cec45f5e0daf48e49cf1  # libcuflynx v0.8.0
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
