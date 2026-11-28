@@ -77,6 +77,17 @@ def _available_formats() -> tuple:
 # every payload (both the CA-introspected schema and the fallback below).
 UNSUPPORTED_SOLVERS = ("CVODE_opencor",)
 
+
+def _withheld_solvers() -> frozenset:
+    """Solvers this machine lacks the tools to run (BE_batched_c without CMake or a C
+    compiler): left off the solver menu like UNSUPPORTED_SOLVERS, while
+    ``compiler_status()["unavailable_solvers"]`` tells Settings why."""
+    try:
+        from compiler_check import unavailable_solvers  # noqa: PLC0415
+
+        return frozenset(unavailable_solvers())
+    except Exception:  # noqa: BLE001 - a probe failure must not lose the menu
+        return frozenset()
 # CA's CVODE_libopencor backend (CVODE_opencor is its alias) needs libOpenCOR, which
 # needs Python 3.12+ and the ``libcuflynx[libopencor]`` extra. It is offered only when
 # the interpreter that would run it can import it.
@@ -639,7 +650,29 @@ def _introspect_analysis_options() -> dict:
             "options_key": meta.get("options_key"),
             "options": [dict(o) for o in (meta.get("options") or [])],
         }
+    if "param_reduction" in out:
+        _annotate_reduction_methods(out["param_reduction"]["options"])
     return out
+
+
+def _annotate_reduction_methods(options: list[dict]) -> None:
+    """Mark each ``param_reduction`` option with the ``methods`` that read it.
+
+    From CA's ``REDUCTIONS`` registry (each method's ``OPTIONS``), so a form shows
+    only the chosen method's options -- ``ParamReduction.from_options`` refuses an
+    option of another method set to anything but its default. ``method`` and the
+    path options are read by every method and stay unmarked, as does everything
+    when this CA has no registry.
+    """
+    try:
+        reductions = ca_from("sensitivity_analysis.parameter_reduction", "REDUCTIONS")
+    except Exception:  # noqa: BLE001 - an older CA, or one missing pandas: show them all
+        return
+    for option in options:
+        methods = [name for name, cls in reductions.items()
+                   if option.get("name") in getattr(cls, "OPTIONS", ())]
+        if methods:
+            option["methods"] = methods
 
 
 #: Source text run by *another* interpreter, so it cannot call :mod:`ca_imports`
@@ -1153,8 +1186,10 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
         s: supported_methods(s, m) for s, m in schema.get("methods_by_solver", {}).items()
     }
 
+    withheld = _withheld_solvers()
+
     def _supported(solvers):
-        return [s for s in solvers if s not in unsupported]
+        return [s for s in solvers if s not in unsupported and s not in withheld]
 
     solvers_by_format = {m: _supported(solvers_by_model_type.get(m, [])) for m in formats}
     # If CA names an unsupported solver (e.g. CVODE_opencor) as a format's default,
@@ -1162,7 +1197,7 @@ def _build_options(schema: dict, differentiable: dict[str, bool]) -> dict:
     default_solver_by_format = {}
     for m in formats:
         d = defaults.get(m)
-        if not d or d in unsupported:
+        if not d or d not in solvers_by_format[m]:
             d = solvers_by_format[m][0] if solvers_by_format[m] else ""
         default_solver_by_format[m] = d
     all_diff = bool(differentiable) and all(differentiable.values())

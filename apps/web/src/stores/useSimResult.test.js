@@ -88,3 +88,26 @@ describe('useSimResult solver plots', () => {
     expect(sim.solverPlots.value).toEqual([])
   })
 })
+
+describe('useSimResult run timing and cancel', () => {
+  it('records when a run started and clears it when the run ends', () => {
+    const sim = useSimResult()
+    sim.setRunning()
+    expect(typeof sim.startedAt.value).toBe('number')
+    sim.setExperiments([])
+    expect(sim.startedAt.value).toBe(null)
+    sim.setRunning()
+    sim.setError('x')
+    expect(sim.startedAt.value).toBe(null)
+  })
+
+  it('keeps the last result when a run is cancelled', () => {
+    const sim = useSimResult()
+    sim.setExperiments([{ time: [0], outputs: {} }])
+    sim.setRunning()
+    sim.setCancelled()
+    expect(sim.status.value).toBe('cancelled')
+    expect(sim.experiments.value).toHaveLength(1)
+    expect(sim.startedAt.value).toBe(null)
+  })
+})

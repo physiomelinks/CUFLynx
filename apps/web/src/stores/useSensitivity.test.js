@@ -4,9 +4,10 @@ vi.mock('../lib/api', () => ({
   startSensitivity: vi.fn(),
   getSensitivityStatus: vi.fn(),
   cancelSensitivity: vi.fn(),
+  getSobolProgress: vi.fn(),
 }))
 
-import { startSensitivity, getSensitivityStatus } from '../lib/api'
+import { startSensitivity, getSensitivityStatus, getSobolProgress } from '../lib/api'
 import { useSensitivity } from './useSensitivity'
 
 const INDICES = { local: { 'y^{0,0} [max]': { 'a/x': 0.5 } } }
@@ -77,13 +78,32 @@ describe('the saved run label names the gradient method that actually ran', () =
     )
     expect(sa.results.value[0].label).toBe('#1 Sobol · saltelli · n64')
   })
+
+  it('says when a Sobol run included the prediction features', async () => {
+    // Its outputs are not the same set as a run without them, so the comparison
+    // selector must tell the two apart.
+    const sa = await runWith(
+      { method: 'sobol', sample_type: 'saltelli', num_samples: 64, include_prediction_items: true },
+      { gradient_method: undefined },
+    )
+    expect(sa.results.value[0].label).toBe('#1 Sobol · saltelli · n64 · +predictions')
+  })
+
+  it('says so for a local run too, and keeps which outputs were prediction features', async () => {
+    const sa = await runWith(
+      { method: 'local', gradient_method: 'FD', nominal: 'current', include_prediction_items: true },
+      { gradient_method: 'FD', prediction_outputs: ['v_max'] },
+    )
+    expect(sa.results.value[0].label).toBe('#1 Local · FD · current · +predictions')
+    expect(sa.predictionOutputs.value).toEqual(['v_max'])
+  })
 })
 
 // Loading a run off disk (#255). The panel reads its heatmap out of the selected
 // *saved* result -- `indices` is a computed over it -- so a loader that assigned
 // to `indices` wrote to a read-only ref and left the panel empty while every
 // other panel filled.
-describe('a run loaded from an outputs directory', () => {
+describe('a run loaded from a working dir', () => {
   const LOADED = {
     indices: { S1: { 'y [max]': { 'a/x': 0.4 } } },
     param_names: ['a/x'],
@@ -120,5 +140,26 @@ describe('a run loaded from an outputs directory', () => {
     const sa = useSensitivity()
     expect(sa.addLoadedResult({ param_names: [] }, {})).toBeNull()
     expect(sa.results.value).toHaveLength(0)
+  })
+})
+
+describe('useSensitivity progress (CA #702)', () => {
+  it("keeps the run's progress file and reads its Sobol design once more at the end", async () => {
+    const progress = { kind: 'sobol', state: 'done', phases: [] }
+    getSobolProgress.mockResolvedValue({ design: { names: ['a/x'] }, convergence: { n: [4] } })
+    const sa = await runWith({ method: 'sobol' }, { progress })
+    expect(sa.progress.value).toEqual(progress)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(getSobolProgress).toHaveBeenCalledWith('j1')
+    expect(sa.sobolProgress.value.convergence).toEqual({ n: [4] })
+  })
+
+  it('forgets both when a new run starts', async () => {
+    getSobolProgress.mockResolvedValue({ design: null, convergence: null })
+    const sa = await runWith({ method: 'sobol' }, { progress: { kind: 'sobol', phases: [] } })
+    startSensitivity.mockReturnValue(new Promise(() => {}))
+    sa.start('m1', { method: 'sobol' })
+    expect(sa.progress.value).toBe(null)
+    expect(sa.sobolProgress.value).toBe(null)
   })
 })

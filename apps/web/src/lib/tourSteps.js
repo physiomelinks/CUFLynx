@@ -48,7 +48,7 @@
  * 16,17,18 · 14,15 (user-defined ops) -> 19,20,21 · 14dup -> 22 · 15dup -> 23 ·
  * 16,17,18 -> 24,25,26 · 19 -> 27 · 20 -> 28 · 21 -> 29 · 22 -> 30 · 23,24 ->
  * 31,32 · 25,26 -> 33,34 · 27,28 -> 35,36 · +37 progress · +38 analysis ·
- * +39,40 the two exports.
+ * +39,40 the two exports · +ia-tab, ia-run for the Identifiability tab (43).
  */
 
 /** Is an anchor on the page right now? Queries `document`, not `#app`: every
@@ -207,13 +207,13 @@ export const TOUR_STEPS = Object.freeze([
   },
   {
     id: 'protocol-detail',
-    target: '[data-testid="pre-time"]',
+    target: '[data-testid="eo-protocol"]',
     side: 'right',
     text: 'Each subexperiment has a pre-time (run to settle, not recorded) and a duration. Add a controlled parameter and you can step, pulse or ramp it inside that window — the shape is drawn as you type it. These are the numbers every run uses, so the simulation reproduces your bench protocol rather than some fixed length picked elsewhere.',
   },
   {
     id: 'data-items',
-    target: '[data-testid="eo-data-items"]',
+    target: '[data-testid="od-data-items"]',
     side: 'right',
     title: 'data_items contain the desired output features (observables)',
     text: 'One row is one number (or one series) the model output features are compared against. The calibration cost is built from summing the cost from each of these rows.',
@@ -221,13 +221,13 @@ export const TOUR_STEPS = Object.freeze([
   },
   {
     id: 'data-item-row',
-    target: '[data-testid="eo-value"]',
+    target: '[data-testid="od-data-row"]',
     side: 'right',
     text: 'On each row: the variable it produces, the measured value, and its std — the uncertainty, which is what weights the row in the cost. Then which experiment and subexperiment it came from.',
   },
   {
     id: 'data-item-detail',
-    target: '[data-testid="eo-operation"]',
+    target: '[data-testid="od-data-row"]',
     side: 'right',
     text: 'The operation turns the simulated trace into that number — max, mean, a series comparison. Open a row with the chevron for its operands, its weight and its cost_type (how the mismatch is scored).',
   },
@@ -256,7 +256,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'op-funcs-save',
     target: '[data-testid="of-save"]',
     side: 'right',
-    text: 'Edit the Python in the box and Save. It is written to your outputs directory, as user_funcs/operation_funcs_user.py, and travels with the study, so a run stays reproducible. It then appears in the operation list beside the built-ins. Mark it @differentiable if a gradient-based calibration should be allowed to use it.',
+    text: 'Edit the Python in the box and Save. It is written to your working dir, as inputs/funcs/<date>/operation_funcs_user.py (each save a new dated version), and travels with the study, so a run stays reproducible. It then appears in the operation list beside the built-ins. Mark it @differentiable if a gradient-based calibration should be allowed to use it.',
     waitFor: () => gone(EDIT_OP_FUNCS),
     onNext: (ctx) => ctx.closeDialog(EDIT_OP_FUNCS),
   },
@@ -328,7 +328,8 @@ export const TOUR_STEPS = Object.freeze([
   },
 
   /* ---------------------------------------------------------------- *
-   * 29-41  Emulator, sensitivity, calibration, UQ, progress, analysis, export
+   * 29-43  Emulator, identifiability, sensitivity, calibration, UQ, progress,
+   *        analysis, export
    *
    * Every pane below is `v-show`n, so each section opens with a step that asks
    * the user to click its tab -- the tour cannot click it for them. Those steps
@@ -338,7 +339,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'emulator-tab',
     target: '[data-testid="tab-emulator"]',
     side: 'right',
-    title: 'Emulator',
+    title: 'Surrogate',
     text: 'Click the tab.',
     when: (ctx) => ctx.leftTab() !== 'emulator',
     advanceOn: { event: 'click' },
@@ -367,6 +368,26 @@ export const TOUR_STEPS = Object.freeze([
     text: 'This button makes all other simulations use the created emulator — sensitivity, calibration and UQ evaluate it instead of the solver. It stays greyed out until an emulator has been trained, and the sliders keep using the real solver so you can always see the gap.',
   },
   {
+    id: 'ia-tab',
+    target: '[data-testid="tab-ia"]',
+    side: 'right',
+    title: 'Identifiability',
+    text: 'This answers "which parameters can the data actually fix?", so a calibration fits only those. Click the tab.',
+    when: (ctx) => ctx.leftTab() !== 'ia',
+    advanceOn: { event: 'click' },
+  },
+  {
+    id: 'ia-run',
+    target: '[data-testid="pr-settings"]',
+    side: 'right',
+    text: 'Parameter reduction reads a Sobol run (an existing one, or one it runs first with the Sensitivity tab\'s settings) and keeps the parameters that move the data by more than its noise, one per independent direction. "Calibrate these" makes the kept ones the params_for_id the Calibration tab fits.',
+    bullets: [
+      'pca scales the outputs by their obs_data std, so a parameter whose effect is below the noise is dropped',
+      'sobol keeps the n_params with the highest Sobol index',
+      'below it, the identifiability analysis checks a best fit: a Laplace approximation, or profile likelihood intervals',
+    ],
+  },
+  {
     id: 'sensitivity-tab',
     target: '[data-testid="tab-sensitivity"]',
     side: 'right',
@@ -379,7 +400,7 @@ export const TOUR_STEPS = Object.freeze([
     id: 'sensitivity-run',
     target: '[data-testid="sa-settings"]',
     side: 'right',
-    text: 'Pick the method and the sample count, then Run. The result lands in Analysis as a per-output, per-parameter table, and parameters that move nothing are candidates for unticking in params_for_id.\n\nTip: including validation/prediction outputs gives more practical sensitivities than including only the outputs you calibrate against.',
+    text: 'Pick the method and the sample count, then Run. The result lands in Analysis as a per-output, per-parameter table, and parameters that move nothing are candidates for unticking in params_for_id.\n\nTip: tick Include prediction items to add prediction outputs that have an operation; they give more practical sensitivities than calibrated outputs alone.',
   },
   {
     id: 'calibration-tab',

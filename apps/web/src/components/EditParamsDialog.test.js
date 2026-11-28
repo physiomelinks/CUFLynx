@@ -236,7 +236,7 @@ describe('EditParamsDialog', () => {
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(() => {})
 
-    const wrapper = mountDialog({ outputsDir: '/tmp/study' })
+    const wrapper = mountDialog({ workingDir: '/tmp/study' })
     await wrapper.find('[data-testid="ep-save"]').trigger('click')
     await flushPromises()
 
@@ -251,7 +251,7 @@ describe('EditParamsDialog', () => {
     expect(uploadParamsForId).toHaveBeenCalledOnce()
     const [fileArg, idArg, saveArg] = uploadParamsForId.mock.calls[0]
     expect(idArg).toBe('abc')
-    expect(saveArg.outputsDir).toBe('/tmp/study')
+    expect(saveArg.workingDir).toBe('/tmp/study')
     expect(saveArg.filename).toMatch(/^p_\d{6}\.json$/)
     expect(fileArg).toBeInstanceOf(File)
     expect(fileArg.name).toMatch(/^p_\d{6}\.json$/) // <stem>_<yymmdd>.json

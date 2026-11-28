@@ -62,6 +62,24 @@ describe('UQPanel UQ options from CA schema', () => {
     expect(payload.thin).toBe(5)
   })
 
+  it('shows an option CA marks with `methods` only under those methods, and sends it there', async () => {
+    const options = [...MCMC_OPTIONS,
+      { name: 'num_samples', type: 'int', default: 2000, methods: ['laplace'] },
+      { name: 'posterior_predictive', type: 'bool', default: true, methods: ['mcmc', 'laplace'] }]
+    const mcmc = mount(UQPanel, { props: { canRun: true, defaults: { method: 'mcmc', uq_options: options } }, global: { stubs } })
+    expect(mcmc.find('[data-testid="mcmc-opt-num_samples"]').exists()).toBe(false)
+    await mcmc.find('[data-testid="run-uq"]').trigger('click')
+    expect(mcmc.emitted('run')[0][0]).not.toHaveProperty('num_samples')
+
+    const laplace = mount(UQPanel, { props: { canRun: true, defaults: { method: 'laplace', uq_options: options } }, global: { stubs } })
+    expect(laplace.find('[data-testid="mcmc-opt-num_samples"]').exists()).toBe(true)
+    // a schema that marks methods (CA #688): an unmarked option (num_steps here) is read
+    // by every method, so it shows under Laplace too
+    expect(laplace.find('[data-testid="mcmc-opt-num_steps"]').exists()).toBe(true)
+    await laplace.find('[data-testid="run-uq"]').trigger('click')
+    expect(laplace.emitted('run')[0][0].num_samples).toBe(2000)
+  })
+
   it('hides the MCMC options for the Laplace method', () => {
     const wrapper = mount(UQPanel, {
       props: { defaults: { method: 'laplace', uq_options: MCMC_OPTIONS } },

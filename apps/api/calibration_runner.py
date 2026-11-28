@@ -26,16 +26,23 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import traceback
 from pathlib import Path
 
 import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
+from solver_info_defaults import with_declared_step_defaults
+from optimiser_budget import default_method
 
 # Force a headless matplotlib backend before circulatory_autogen imports pyplot
 # (the post-calibration error plots run server-side with no display).
 os.environ.setdefault("MPLBACKEND", "Agg")
+
+#: When this process started: a validation_results.json older than that belongs
+#: to an earlier run in the same working dir.
+_STARTED = time.time()
 
 # Markers the API watches for in stdout.
 DONE_MARKER = "__CALIBRATION_DONE__"
@@ -84,6 +91,9 @@ def _solver_info_from_config(config: dict, settings: dict) -> dict:
     Settings popup) with the solver name + CVODE step defaults filled in."""
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
+    # The solver's own step defaults first, so CVODE's 1e-4 cap only reaches solvers
+    # that list it (see solver_info_defaults and CA's solver_info_fields).
+    si = with_declared_step_defaults(si["solver"], si)
     if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
         si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
     # No MaximumNumberOfSteps default: CA fills its own for the backends that use it.
@@ -126,12 +136,25 @@ def _apply_start_point(param_id, values: dict, source_label: str) -> None:
         print(f"warning: could not apply {source_label} start point: {exc}", flush=True)
 
 
-def run(config: dict) -> dict:
+def _param_id_class():
     _ensure_ca_on_path()
     from ca_imports import ca_from  # noqa: E402 (shipped into runners/ too)
+
+    return ca_from("param_id.paramID", "CVS0DParamID")
+
+
+def _build_param_id(config: dict, *, announce: bool = True):
+    """CA's ``CVS0DParamID`` for this run's config: the calibration ``run`` makes, and the
+    object a stopped run's error vectors are written from (:func:`write_best_fit_errors`),
+    which must be the same so its output directory and observables are the run's."""
     from local_sensitivity import resolve_gradient_method  # noqa: E402
 
-    CVS0DParamID = ca_from("param_id.paramID", "CVS0DParamID")
+    from obs_data import with_ca_obs_path  # noqa: E402 (runners/ too)
+
+    CVS0DParamID = _param_id_class()
+
+    # CA may only be shown the obs_data without its held-out data (obs_data.for_ca)
+    config = with_ca_obs_path(config)
 
     settings = config.get("settings", {})
     output_dir = config["output_dir"]
@@ -158,28 +181,38 @@ def run(config: dict) -> dict:
         np.random.seed(int(seed))
 
     optimiser_options = _optimiser_options(settings, seed)
+    method = settings.get("param_id_method") or default_method()
 
-    print(
-        f"Starting {settings.get('param_id_method', 'genetic_algorithm')} "
-        f"calibration ({optimiser_options.get('num_calls_to_function', '?')} max evals)",
-        flush=True,
-    )
+    if announce:
+        print(
+            f"Starting {method} "
+            f"calibration ({optimiser_options.get('num_calls_to_function', '?')} max evals)",
+            flush=True,
+        )
 
     emulator_kwargs = emulator_config.engine_kwargs(config)
     note = emulator_config.describe(config)
-    if note:
+    if note and announce:
         print(note, flush=True)
 
-    param_id = CVS0DParamID(
+    dt = float(settings.get("dt", 0.01))
+    # What the solve is configured with, said once: a study's adopted user_inputs
+    # (or Settings) decide these, and a run log that cannot show them leaves "was my
+    # MaximumStep used?" unanswerable.
+    if announce:
+        print(f"Solver: {solver_info.get('solver')}, dt = {dt:g}, solver_info = "
+              f"{json.dumps(solver_info, sort_keys=True)}", flush=True)
+
+    return CVS0DParamID(
         model_path=config["model_path"],
         model_type=model_type,
-        param_id_method=settings.get("param_id_method", "genetic_algorithm"),
+        param_id_method=method,
         file_name_prefix=config.get("file_prefix", "model"),
         params_for_id_path=config["params_path"],
         param_id_obs_path=config["obs_path"],
         sim_time=float(settings.get("sim_time", 2.0)),
         pre_time=float(settings.get("pre_time", 0.0)),
-        dt=float(settings.get("dt", 0.01)),
+        dt=dt,
         solver_info=solver_info,
         optimiser_options=optimiser_options,
         do_ad=do_ad,
@@ -191,6 +224,36 @@ def run(config: dict) -> dict:
         cost_funcs_external_path=config.get("cost_funcs_external_path"),
         **emulator_kwargs,
     )
+
+
+def write_best_fit_errors(config: dict) -> dict:
+    """The error vectors of a calibration that was stopped before it wrote them: CA's
+    ``save_best_fit_errors`` on an object rebuilt from the run's config, at the run's
+    ``best_param_vals.npy`` (its best so far). A libcuflynx without it writes nothing."""
+    if not hasattr(_param_id_class(), "save_best_fit_errors"):
+        print("This libcuflynx does not write a stopped calibration's error vectors.",
+              flush=True)
+        return {"rank": 0, "errors": None}
+    print("Writing the best-so-far fit's error per observable", flush=True)
+    param_id = _build_param_id(config, announce=False)
+    paths = param_id.save_best_fit_errors()
+    if paths is None and getattr(param_id, "rank", 0) == 0:
+        print("The stopped calibration saved no best fit, so it has no errors.", flush=True)
+    return {"rank": getattr(param_id, "rank", 0), "errors": paths}
+
+
+def run(config: dict) -> dict:
+    if config.get("best_fit_errors_only"):
+        return write_best_fit_errors(config)
+    from obs_data import prediction_items_of  # noqa: E402 (runners/ too)
+
+    settings = config.get("settings", {})
+    output_dir = config["output_dir"]
+    # The prediction_items as the user wrote them, held-out data included: the CA
+    # object is only shown the document without it (obs_data.for_ca).
+    prediction_items = prediction_items_of(_read_json(config["obs_path"]))
+    emulated = bool(emulator_config.engine_kwargs(config))
+    param_id = _build_param_id(config)
 
     # Gradient descent (sp_minimize) starts from param_init, which CA seeds from the
     # model's built-in initial values. The user can instead start from a chosen point
@@ -212,6 +275,11 @@ def run(config: dict) -> dict:
     # which drive the Analysis-tab bar charts. Best-effort; never fails the run.
     errors = _generate_error_vectors(param_id, output_dir)
 
+    # The best fit against the obs_data's held-out data, if it carries any.
+    # Rank 0 only, like everything CA writes after a run.
+    if getattr(param_id, "rank", 0) == 0:
+        _validate_held_out(param_id, prediction_items, emulated)
+
     # Under mpiexec every rank runs this script; only rank 0 holds the
     # authoritative best fit and writes the results (mirrors param_id_run_script).
     rank = getattr(param_id, "rank", 0)
@@ -231,25 +299,13 @@ def run(config: dict) -> dict:
         cost = getattr(getattr(param_id, "param_id", None), "best_cost", None)
         info = getattr(param_id, "param_id_info", None) or {}
         modifiers = _result_modifiers(info, best_vals)
-        # Save the calibrated CellML (best-fit values baked into the flat model)
-        # so it can be reloaded and reproduce the calibrated simulation (#114).
-        # The write gets *physical* values: a modifier slot's theta expands to
-        # theta*baseline_i via CA's own expansion. If that expansion fails with
-        # modifiers present, skip the write rather than bake theta in as if it
-        # were a volume or a compliance.
-        try:
-            expanded = _expanded_best_fit(info, param_names, best_vals)
-            calibrated_path = _write_calibrated_cellml(config, expanded, output_dir)
-        except Exception as exc:  # noqa: BLE001 - best-effort, never fails the run
-            print(
-                f"warning: could not expand the modifier best fit for the "
-                f"calibrated CellML: {exc}",
-                flush=True,
-            )
-            calibrated_path = None
+        # The calibrated model (the best fit written into the model, #114) is CA's to write
+        # (CVS0DParamID.write_calibrated_model, CA #650), with modifiers expanded as the
+        # calibration ran them; it records the file in the study manifest too.
+        calibrated_path = _ca_write_calibrated_model(param_id, config, output_dir)
         # No results.json. Everything below is already on disk, written by CA
         # itself, and the manager reads it from there (#210) -- serialising a
-        # second copy put a file in the user's outputs directory that is no part
+        # second copy put a file in the user's working dir that is no part
         # of the study and made CUFLynx the author of a format duplicating CA's.
         # The return value still carries it, because that is this function's
         # contract with its caller inside this process.
@@ -292,94 +348,56 @@ def _result_modifiers(param_id_info: dict, best_vals) -> list:
     return out
 
 
-def _expanded_best_fit(param_id_info: dict, param_names, best_vals) -> dict:
-    """Best-fit values as *physical* model values, one per member qname.
-
-    A modifier's slot (theta) expands to ``theta * baseline_i`` through CA's
-    ``expand_modifier_param_vals`` -- the same arithmetic the calibration ran
-    with, not a reimplementation. On a CA predating modifiers the vector passes
-    through raw, which is exactly today's behavior (no modifiers can exist
-    there). Unresolved baselines raise: writing theta into a CellML as if it
-    were a physical value is the failure this function exists to prevent.
-    """
-    vals = [float(v) for v in best_vals]
-    try:
-        from ca_imports import ca_from  # noqa: PLC0415
-
-        expand_modifier_param_vals = ca_from(
-            "parsers.PrimitiveParsers", "expand_modifier_param_vals")
-    except ImportError:
-        expanded = vals
-    else:
-        expanded = expand_modifier_param_vals(param_id_info or {}, vals)
-    out: dict[str, float] = {}
-    for i, name_list in enumerate(param_names):
-        slot = expanded[i]
-        if isinstance(slot, (list, tuple)):
-            for qname, val in zip(name_list, slot):
-                out[qname] = float(val)
-        else:
-            for qname in name_list:
-                out[qname] = float(slot)
-    return out
+#: what a libcuflynx without CVS0DParamID.write_calibrated_model is told
+CALIBRATED_MODEL_NEEDS = ("this circulatory_autogen has no write_calibrated_model, which writes "
+                          "the calibrated model: upgrade to libcuflynx 0.8.0 or later "
+                          "(circulatory_autogen #650). The calibration result is kept; "
+                          "only the calibrated CellML is not written.")
 
 
-def _write_calibrated_cellml(config: dict, params: dict, output_dir: str) -> str | None:
-    """Bake the best-fit values into the uploaded flat CellML and save it beside
-    the results (issue #114). Best-effort: never fails the calibration.
+def _ca_write_calibrated_model(param_id, config: dict, output_dir: str) -> str | None:
+    """CA writes ``<output_dir>/<prefix>_calibrated.cellml`` and records it in the study
+    manifest (``CVS0DParamID.write_calibrated_model``, CA #650); returns its path.
 
-    Returns the written path, or None if there's no CellML to update or nothing
-    resolved. The source is ``config["cellml_path"]`` (the original uploaded model,
-    regardless of the generated_model_format used for the run)."""
+    None for a model that is not CellML (nothing to write), and when CA has no such writer
+    or the write fails: both are said in the run log, and neither fails the calibration,
+    whose result is already on disk and can be written into a model again from there."""
     cellml_path = config.get("cellml_path")
-    if not cellml_path or not str(cellml_path).endswith(".cellml") or not params:
+    if not cellml_path or not str(cellml_path).endswith(".cellml"):
+        return None
+    write = getattr(param_id, "write_calibrated_model", None)
+    if write is None:
+        print(f"ERROR: {CALIBRATED_MODEL_NEEDS}", flush=True)
         return None
     try:
-        from calibrated_cellml import calibrated_cellml  # local import: pure-XML
-
-        text = Path(cellml_path).read_text(encoding="utf-8")
-        new_text, report = calibrated_cellml(text, params)
-        if not report["updated"]:
-            return None
-        prefix = config.get("file_prefix") or Path(cellml_path).stem
-        # The name comes from `ca_run_history`, which is what reads it back and
-        # ships beside this runner for exactly that reason -- writer and readers
-        # spelling it separately is how the file and the lookup drift apart.
-        from ca_run_history import calibrated_model_name  # local: runners/ sibling
-
-        out_path = os.path.join(output_dir, calibrated_model_name(prefix))
-        Path(out_path).write_text(new_text, encoding="utf-8")
-        if report["unresolved"]:
-            print(
-                f"calibrated model: {len(report['updated'])} params written, "
-                f"{len(report['unresolved'])} unresolved: {report['unresolved']}",
-                flush=True,
-            )
-        else:
-            print(f"Saved calibrated model: {out_path}", flush=True)
-        return out_path
-    except Exception as exc:  # noqa: BLE001 - saving the model must not fail the run
-        print(f"WARNING: could not save calibrated model: {exc}", flush=True)
+        path = write(cellml_path=cellml_path, output_dir=output_dir)
+    except Exception as exc:  # noqa: BLE001 - the calibration result stands without it
+        print(f"WARNING: circulatory_autogen could not write the calibrated model: {exc}",
+              flush=True)
         return None
+    return path if path and os.path.isfile(path) else None
 
 
 def _generate_error_vectors(param_id, output_dir: str) -> dict:
-    """Run circulatory_autogen's post-calibration plotting to produce the
-    per-observable percent/std error vectors, then load them.
+    """Load the best fit's per-observable percent/std error vectors.
 
-    Mirrors plot_param_id_script (simulate_with_best_param_vals -> plot_outputs),
-    which writes ``percent_error_vec.npy`` / ``std_error_vec.npy`` to output_dir.
+    A libcuflynx with ``save_best_fit_errors`` writes them itself when ``run`` ends
+    (``percent_error_vec.npy``, ``std_error_vec.npy``, ``error_vec_names.npy``), from one
+    simulation at the best fit and without figures. An older one writes them only from
+    its plotting, so for it this runs plot_param_id_script's steps
+    (simulate_with_best_param_vals -> plot_outputs) first.
     Returns ``{"percent_error", "std_error", "error_labels"}`` on rank 0 (values
-    may be None when plotting is unavailable); ``{}`` on other ranks. Best-effort:
-    a plotting failure must not fail the calibration.
+    may be None when they could not be made); ``{}`` on other ranks. Best-effort:
+    a failure here must not fail the calibration.
     """
     import numpy as np
 
-    try:
-        param_id.simulate_with_best_param_vals()
-        param_id.plot_outputs()
-    except Exception as exc:  # noqa: BLE001 - plotting is best-effort
-        print(f"warning: post-calibration error plots skipped: {exc}", flush=True)
+    if not hasattr(param_id, "save_best_fit_errors"):
+        try:
+            param_id.simulate_with_best_param_vals()
+            param_id.plot_outputs()
+        except Exception as exc:  # noqa: BLE001 - plotting is best-effort
+            print(f"warning: post-calibration error plots skipped: {exc}", flush=True)
 
     if getattr(param_id, "rank", 0) != 0:
         return {}
@@ -397,6 +415,54 @@ def _generate_error_vectors(param_id, output_dir: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         print(f"warning: could not load error vectors: {exc}", flush=True)
     return out
+
+
+def _read_json(path: str):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - CA reports an unreadable obs_data itself
+        return None
+
+
+def _validate_held_out(param_id, prediction_items: list, emulated: bool) -> str | None:
+    """Have libcuflynx validate the best fit against the held-out data (CA #535).
+
+    libcuflynx does all of it: ``save_prediction_data`` simulates every experiment
+    at the best fit, scores the prediction items that carry data
+    (``param_id.validation``) and writes ``validation_results.json`` into its run
+    directory, which is what the manager reads. CUFLynx computes nothing; a
+    libcuflynx without ``param_id.validation`` gives no validation, and the run log
+    says why. Returns the file's path, or None when nothing was validated.
+
+    Best-effort: a validation that cannot be made must never fail the calibration.
+    """
+    import ca_run_history  # noqa: PLC0415 (CA output formats, one place)
+    from obs_data import ca_accepts_held_out  # noqa: PLC0415 (runners/ too)
+
+    if not any(isinstance(it, dict) and it.get("value") is not None
+               for it in prediction_items):
+        return None
+    if emulated:
+        # An emulator predicts the scalar data_item features only, never traces.
+        print("held-out data not validated: the calibration ran on the emulator, "
+              "which predicts no traces", flush=True)
+        return None
+    if not ca_accepts_held_out():
+        print("held-out data not validated: that needs a newer libcuflynx "
+              "(one with param_id.validation)", flush=True)
+        return None
+    run_dir = getattr(param_id, "output_dir", None)
+    if not run_dir:
+        return None
+    try:
+        param_id.save_prediction_data()
+    except Exception as exc:  # noqa: BLE001 - never fail the run over its validation
+        print(f"warning: held-out data not validated: {exc}", flush=True)
+        return None
+    written = os.path.join(run_dir, ca_run_history.VALIDATION_RESULTS_FILE)
+    if os.path.isfile(written) and os.path.getmtime(written) >= _STARTED - 1.0:
+        return written
+    return None
 
 
 def _find_output_file(param_id, output_dir: str, name: str) -> str | None:
@@ -432,7 +498,8 @@ def main(argv: list[str]) -> int:
         return 1
     # Only rank 0 reports completion (avoids duplicate markers under mpiexec).
     if result.get("rank", 0) == 0:
-        print(f"best cost: {result['cost']}", flush=True)
+        if "cost" in result:
+            print(f"best cost: {result['cost']}", flush=True)
         print(DONE_MARKER, flush=True)
     return 0
 

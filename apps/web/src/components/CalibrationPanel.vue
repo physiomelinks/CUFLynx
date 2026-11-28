@@ -5,6 +5,8 @@ import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
+import SettingsSections from './SettingsSections.vue'
+import { currentDefault, differs } from '../lib/advancedSettings'
 
 const props = defineProps({
   defaults: { type: Object, default: () => ({}) },
@@ -42,7 +44,8 @@ const settings = reactive({
   // completed calibration's best fit, so a stopped run can be continued, #83).
   start_from: 'model',
   num_cores: 1,
-  dt: 0.01,
+  // No dt: a run that names none is given the engine's (Settings, or a study's
+  // user_inputs), server-side. A literal here overrode both with 0.01.
   DEBUG: false,
 })
 
@@ -99,6 +102,23 @@ const methodOptions = computed(() =>
   (selectedMethod.value?.options ?? []).filter((o) => o.name !== 'seed'),
 )
 const isGradientMethod = computed(() => selectedMethod.value?.gradient_based ?? false)
+
+// Every setting the form shows, in order: this tab's own fields ({name, own: true}) where
+// they apply, and the method's CA options. SettingsSections puts the ones
+// advancedSettings.json lists under Advanced settings.
+const settingItems = computed(() => [
+  ...(isGradientMethod.value ? [{ name: 'gradient_method', own: true }] : []),
+  ...(showStartFrom.value ? [{ name: 'start_from', own: true }] : []),
+  ...methodOptions.value,
+  { name: 'num_cores', own: true },
+  { name: 'DEBUG', own: true },
+])
+
+/** Whether a setting differs from its default (a CA option's, its DEBUG one when on). */
+function settingChanged(item) {
+  if (item.own) return false
+  return differs(optionValues[item.name], currentDefault(item, settings.DEBUG))
+}
 // Multi-start methods draw their own starting points by sampling (schema signal:
 // a num_starts / start_sampling option), so a single "Start from" point doesn't
 // apply to them.
@@ -192,13 +212,26 @@ function buildSettings() {
   return {
     param_id_method: settings.param_id_method,
     num_cores: settings.num_cores,
-    dt: settings.dt,
     DEBUG: settings.DEBUG,
     ...(isGradientMethod.value ? { gradient_method: settings.gradient_method } : {}),
     ...(showStartFrom.value ? { start_from: settings.start_from } : {}),
     ...opts,
   }
 }
+
+/**
+ * Fill the panel from a workflow step's settings (lib/workflowTarget panelSettings), when
+ * the step is clicked in the Workflow view: a key the panel holds is set, any other is a
+ * method option (CA's schema seeds only options that have no value, so these stay).
+ */
+function applySettings(values) {
+  for (const [k, v] of Object.entries(values ?? {})) {
+    if (v === undefined) continue
+    if (k in settings) settings[k] = v
+    else optionValues[k] = v
+  }
+}
+defineExpose({ applySettings })
 
 // Surface live settings upward so other panels (e.g. sensitivity "run calibration
 // first") reuse the user's calibration configuration.
@@ -248,93 +281,98 @@ function onRun() {
           data-testid="calib-method"
         />
       </label>
-      <label v-if="isGradientMethod" class="field">
-        <span title="Gradient source: finite difference, or automatic differentiation / forward sensitivity where the model supports it">Gradient</span>
-        <Select
-          v-model="settings.gradient_method"
-          :options="gradientOptions"
-          option-label="label"
-          option-value="value"
-          size="small"
-          data-testid="calib-gradient-method"
-        />
-      </label>
-      <label v-if="showStartFrom" class="field">
-        <span title="Where gradient descent starts: the model's initial values, the current slider values, or the previous completed calibration's best fit (to continue a stopped run).">Start from</span>
-        <Select
-          v-model="settings.start_from"
-          :options="startFromOptions"
-          option-label="label"
-          option-value="value"
-          size="small"
-          data-testid="calib-start-from"
-        />
-      </label>
-
-      <!-- Per-method settings, from CA's PARAM_ID_METHODS[method].options schema. -->
-      <template v-for="opt in methodOptions" :key="opt.name">
-        <label v-if="opt.type === 'bool'" class="field checkbox">
-          <Checkbox v-model="optionValues[opt.name]" :binary="true" :input-id="'opt-' + opt.name" />
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-        </label>
-        <label v-else-if="opt.type === 'enum'" class="field">
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          <Select
-            v-model="optionValues[opt.name]"
-            :options="opt.choices"
-            size="small"
-            :data-testid="'calib-opt-' + opt.name"
-          />
-        </label>
-        <!-- 'str' needs a text box: falling through to InputNumber coerces a
-             string default to NaN. -->
-        <label v-else-if="opt.type === 'str'" class="field">
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          <InputText
-            v-model="optionValues[opt.name]"
-            size="small"
-            :data-testid="'calib-opt-' + opt.name"
-          />
-        </label>
-        <label v-else class="field">
-          <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
-          <!--
-            PrimeVue InputNumber binds its <input> via `defaultValue` (uncontrolled):
-            it reflects the model on mount but NOT on a later programmatic change.
-            Toggling DEBUG swaps the value in place, so remount the field (key on the
-            DEBUG state) for options that have a debug_default, or the displayed
-            number wouldn't change (issue: DEBUG "doesn't toggle").
-          -->
-          <InputNumber
-            :key="opt.name + (settings.DEBUG && opt.debug_default != null ? '-debug' : '')"
-            v-model="optionValues[opt.name]"
-            :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
-            :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
-            size="small"
-            :data-testid="'calib-opt-' + opt.name"
-          />
-        </label>
-      </template>
-
-      <label class="field">
-        <span title="mpiexec -n N: parallel population evaluation">Cores</span>
-        <InputNumber
-          v-model="settings.num_cores"
-          :min="1"
-          :max="64"
-          size="small"
-          :invalid="coresInvalid"
-          data-testid="calib-cores"
-        />
-        <small v-if="coresInvalid" class="cores-invalid" data-testid="calib-cores-invalid">
-          Cores &gt; 1 not available (no MPI launcher). Set to 1, or pick a Python
-          interpreter marked MPI ✓ in the top bar (Windows: install Microsoft MPI).
-        </small>
-      </label>
-      <label class="field checkbox">
-        <Checkbox v-model="settings.DEBUG" :binary="true" input-id="cal-debug" />
-        <span>DEBUG (small population, fast)</span>
-      </label>
+      <!-- The settings, standard then Advanced (lib/advancedSettings.json): this tab's own
+           fields and the method's options from CA's PARAM_ID_METHODS[method].options. -->
+      <SettingsSections tab="calibration" :items="settingItems" :changed="settingChanged">
+        <template #default="{ item: opt }">
+          <template v-if="opt.own">
+            <label v-if="opt.name === 'gradient_method'" class="field">
+              <span title="Gradient source: finite difference, or automatic differentiation / forward sensitivity where the model supports it">Gradient</span>
+              <Select
+                v-model="settings.gradient_method"
+                :options="gradientOptions"
+                option-label="label"
+                option-value="value"
+                size="small"
+                data-testid="calib-gradient-method"
+              />
+            </label>
+            <label v-else-if="opt.name === 'start_from'" class="field">
+              <span title="Where gradient descent starts: the model's initial values, the current slider values, or the previous completed calibration's best fit (to continue a stopped run).">Start from</span>
+              <Select
+                v-model="settings.start_from"
+                :options="startFromOptions"
+                option-label="label"
+                option-value="value"
+                size="small"
+                data-testid="calib-start-from"
+              />
+            </label>
+            <label v-else-if="opt.name === 'num_cores'" class="field">
+              <span title="mpiexec -n N: parallel population evaluation">Cores</span>
+              <InputNumber
+                v-model="settings.num_cores"
+                :min="1"
+                :max="64"
+                size="small"
+                :invalid="coresInvalid"
+                data-testid="calib-cores"
+              />
+              <small v-if="coresInvalid" class="cores-invalid" data-testid="calib-cores-invalid">
+                Cores &gt; 1 not available (no MPI launcher). Set to 1, or pick a Python
+                interpreter marked MPI ✓ in the top bar (Windows: install Microsoft MPI).
+              </small>
+            </label>
+            <label v-else-if="opt.name === 'DEBUG'" class="field checkbox">
+              <Checkbox v-model="settings.DEBUG" :binary="true" input-id="cal-debug" />
+              <span>DEBUG (small population, fast)</span>
+            </label>
+          </template>
+          <template v-else>
+            <label v-if="opt.type === 'bool'" class="field checkbox">
+              <Checkbox v-model="optionValues[opt.name]" :binary="true" :input-id="'opt-' + opt.name" />
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+            </label>
+            <label v-else-if="opt.type === 'enum'" class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <Select
+                v-model="optionValues[opt.name]"
+                :options="opt.choices"
+                size="small"
+                :data-testid="'calib-opt-' + opt.name"
+              />
+            </label>
+            <!-- 'str' needs a text box: falling through to InputNumber coerces a
+                 string default to NaN. -->
+            <label v-else-if="opt.type === 'str'" class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <InputText
+                v-model="optionValues[opt.name]"
+                size="small"
+                :data-testid="'calib-opt-' + opt.name"
+              />
+            </label>
+            <label v-else class="field">
+              <span :title="opt.description">{{ optionLabel(opt.name) }}</span>
+              <!--
+                PrimeVue InputNumber binds its <input> via `defaultValue` (uncontrolled):
+                it reflects the model on mount but NOT on a later programmatic change.
+                Toggling DEBUG swaps the value in place, so remount the field (key on the
+                DEBUG state) for options that have a debug_default, or the displayed
+                number wouldn't change (issue: DEBUG "doesn't toggle").
+              -->
+              <InputNumber
+                :key="opt.name + (settings.DEBUG && opt.debug_default != null ? '-debug' : '')"
+                v-model="optionValues[opt.name]"
+                :min-fraction-digits="opt.type === 'float' ? 1 : undefined"
+                :max-fraction-digits="opt.type === 'float' ? 10 : undefined"
+                size="small"
+                :data-testid="'calib-opt-' + opt.name"
+              />
+            </label>
+          </template>
+        </template>
+      </SettingsSections>
     </div>
 
     <div class="cal-actions">

@@ -150,9 +150,12 @@ def test_ad_unavailable_when_an_op_is_not_differentiable(client, monkeypatch):
     solver_options_mod.reset_cache()
 
 
-def test_engine_forwards_format_and_solver_to_helper_factory():
+def test_engine_forwards_format_and_solver_to_helper_factory(monkeypatch):
     """The engine threads its model_type/solver/solver_info into the helper
-    factory (so live sims use the configured backend) — no CA needed."""
+    factory (so live sims use the configured backend) — no CA needed. The backend
+    is taken as importable: where casadi is absent and scipy present, the engine
+    would otherwise fall back to python/solve_ivp, which is another test's subject."""
+    monkeypatch.setattr(engine_mod, "backend_importable", lambda model_type: True)
     captured = {}
 
     class _Dummy:

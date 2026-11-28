@@ -1,4 +1,7 @@
-"""The evaluation budget a calibration gets when the user has not set one.
+"""The method and evaluation budget a calibration gets when the user has not set them.
+
+The method is CA's ``DEFAULT_PARAM_ID_METHOD`` (CMA-ES from libcuflynx 0.8.0),
+or the genetic algorithm on a CA that declares none.
 
 CA's genetic algorithm exits when ``num_calls_to_function`` is below one
 generation's population, so its fallback is exactly one population -- the
@@ -10,8 +13,8 @@ under DEBUG) in ``PARAM_ID_METHODS['genetic_algorithm']``.
 Other methods take the schema's own ``num_calls_to_function`` default; only when
 CA declares none (or cannot be read) does the old fixed fallback apply.
 
-Ships into ``runners/`` beside ``ca_imports``: the sensitivity runner and the
-pipeline export both use it, so the two cannot disagree on the budget.
+Ships into ``runners/`` beside ``ca_imports``: the runners, the defaults routes
+and the pipeline export all use it, so they cannot disagree on the method or budget.
 """
 from __future__ import annotations
 
@@ -44,6 +47,15 @@ def ga_population(options_schema: list[dict], user_options: dict | None = None,
     return survivors + survivors * size("num_mutations_per_survivor") + size("num_cross_breed")
 
 
+def default_method() -> str:
+    """CA's default calibration method, or the genetic algorithm when this CA declares none."""
+    ensure_ca_path()
+    try:
+        return ca_from("parsers.PrimitiveParsers", "DEFAULT_PARAM_ID_METHOD") or GENETIC_ALGORITHM
+    except ImportError:
+        return GENETIC_ALGORITHM
+
+
 def _method_options(param_id_method: str):
     """CA's option schema for ``param_id_method``, or None when this CA has none."""
     ensure_ca_path()
@@ -61,7 +73,7 @@ def default_num_calls(param_id_method: str | None, user_options: dict | None = N
     A method whose schema sizes a population (CA's genetic algorithm) gets one
     population; any other gets its schema default for ``num_calls_to_function``.
     """
-    schema = _method_options(param_id_method or GENETIC_ALGORITHM)
+    schema = _method_options(param_id_method or default_method())
     if not schema:
         return LEGACY_FALLBACK
     names = {o["name"] for o in schema}

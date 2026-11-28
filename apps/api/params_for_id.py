@@ -25,26 +25,13 @@ import math
 from dataclasses import dataclass, field
 
 import params_json
+import phlynx_components
 
-#: Components a model puts its constants in. When a params_for_id row's
-#: ``vessel/param`` name doesn't exist directly (flat models rename constants),
-#: the value lives here under the CA "gen name".
-#:
-#: Two conventions, both live (#345). ``parameters`` / ``parameters_global`` is
-#: circulatory_autogen's and what #287 was written against;
-#: ``instance_parameters`` / ``global_parameters`` is what PhLynx emits now. Both
-#: are listed rather than swapped: an archive exported by an older PhLynx, and
-#: every model CA generated, still use the first pair, and a rename that dropped
-#: them would stop resolving parameters in models that resolve today.
-PARAM_COMPONENTS = (
-    "parameters",
-    "parameters_global",
-    "instance_parameters",
-    "global_parameters",
-)
-
-# Kept as the module-private spelling this file has always used internally.
-_PARAM_COMPONENTS = PARAM_COMPONENTS
+#: The components a model without PhLynx ids puts its constants in. When a
+#: params_for_id row's ``vessel/param`` name doesn't exist directly (flat models
+#: rename constants), the value lives in one under the CA "gen name". A model
+#: PhLynx wrote with ids has its own (``CellMLModel.parameter_components``, #422).
+PARAM_COMPONENTS = phlynx_components.PARAMETER_NAMES
 
 
 class ParamsForIdError(ValueError):
@@ -145,13 +132,40 @@ def _ca_qname_candidates(vessel: str, param_name: str) -> list[str] | None:
         return None
 
 
-def _build_gen_index(initial_values: dict[str, float]) -> dict[str, dict[str, float]]:
+class _GenIndex(dict):
+    """``{bare name: {qname: value}}``, with what the model's component ids say (#422):
+    ``param_components``, the components holding its parameters, which settle an
+    ambiguous bare name, and ``actual_names``, PhLynx's name for each component it
+    generated -> the name it has in this model."""
+
+    param_components: tuple[str, ...] = PARAM_COMPONENTS
+    actual_names: dict[str, str] = {}
+
+
+def _build_gen_index(
+    initial_values: dict[str, float],
+    component_ids: dict[str, str | None] | None = None,
+) -> _GenIndex:
     """Index the model's initial values by *bare* variable name (last path segment)
-    so a flat model's ``parameters/<gen>`` constants can be found by ``<gen>``."""
-    idx: dict[str, dict[str, float]] = {}
+    so a flat model's ``parameters/<gen>`` constants can be found by ``<gen>``.
+    ``component_ids``: the model's ``{component: id}`` (``CellMLModel.component_ids``);
+    without them, components are known by the names in :data:`PARAM_COMPONENTS`."""
+    idx = _GenIndex()
     for qname, val in initial_values.items():
         idx.setdefault(qname.rsplit("/", 1)[-1], {})[qname] = val
+    if component_ids:
+        idx.param_components = phlynx_components.parameter_components(component_ids)
+        idx.actual_names = phlynx_components.actual_names(component_ids)
     return idx
+
+
+def _as_named_in_model(candidate: str, gen_index) -> str:
+    """CA's candidate ``component/variable`` with a PhLynx component name replaced by the
+    name that component has in the model (``instance_parameters/C`` ->
+    ``instance_parameters_1/C`` when a modeller's own component took the name)."""
+    component, _, variable = candidate.partition("/")
+    actual = getattr(gen_index, "actual_names", {}).get(component)
+    return f"{actual}/{variable}" if actual and variable else candidate
 
 
 def resolve_model_qname(
@@ -165,7 +179,9 @@ def resolve_model_qname(
 
     **CA is asked first.** ``model_qname_candidates`` returns the names a flat
     model may have given this entry, most specific first, and the first one the
-    model actually has wins — so the naming rule stays CA's (#210). The bare-name
+    model actually has wins — so the naming rule stays CA's (#210). In a model
+    PhLynx wrote with component ids, a candidate in one of PhLynx's components
+    means that component, under the name it has in the model (#422). The bare-name
     search below runs only when CA offered nothing that matched, so it can widen
     the search but never contradict CA.
 
@@ -180,6 +196,7 @@ def resolve_model_qname(
         return direct
 
     for candidate in _ca_qname_candidates(vessel, param_name) or ():
+        candidate = _as_named_in_model(candidate, gen_index)
         if candidate in initial_values:
             return candidate
 
@@ -189,7 +206,8 @@ def resolve_model_qname(
     if len(hits) == 1:
         return next(iter(hits))
     # Ambiguous bare name -> prefer the flat model's parameters component.
-    preferred = [q for q in hits if q.split("/", 1)[0] in _PARAM_COMPONENTS]
+    components = getattr(gen_index, "param_components", PARAM_COMPONENTS)
+    preferred = [q for q in hits if q.split("/", 1)[0] in components]
     if len(preferred) == 1:
         return preferred[0]
     return None
@@ -335,6 +353,7 @@ class ParamEntry:
 def parse_params_for_id(
     data: bytes | str | dict,
     initial_values: dict[str, float] | None = None,
+    component_ids: dict[str, str | None] | None = None,
 ) -> list[ParamEntry]:
     """Parse a params_for_id document into a list of slider entries.
 
@@ -357,7 +376,7 @@ def parse_params_for_id(
         # cannot import this one without a cycle, so it is translated here.
         raise ParamsForIdError(str(exc)) from exc
 
-    return _entries_from_doc(doc, initial_values)
+    return _entries_from_doc(doc, initial_values, component_ids)
 
 
 def _bounds(item: dict, idx: int, label: str) -> tuple:
@@ -499,6 +518,7 @@ def _modifier_entry(
 def _entries_from_doc(
     doc: dict,
     initial_values: dict[str, float] | None = None,
+    component_ids: dict[str, str | None] | None = None,
 ) -> list[ParamEntry]:
     """Slider entries from the canonical JSON form.
 
@@ -507,7 +527,7 @@ def _entries_from_doc(
     JSON cannot disagree about any of it.
     """
     initial_values = initial_values or {}
-    gen_index = _build_gen_index(initial_values)
+    gen_index = _build_gen_index(initial_values, component_ids)
     prior_names = params_json.prior_param_names()
 
     entries: list[ParamEntry] = []

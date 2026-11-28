@@ -1,4 +1,16 @@
-"""Write a *calibrated* CellML model (issue #114).
+"""Write parameter values into a CellML model (issue #114).
+
+:func:`substitute_values` is the one entry point: the calibrated-model save of a
+direct calibration run, the send to PhLynx (``omex_export``) and a module
+library's calibration (``library_calibration``) all write through it. It uses
+libcuflynx's writer, ``param_id.calibrated_model.substitute_parameter_values``,
+the one a workflow step's calibrated model is written with, so every calibrated
+model is the same file for the same values.
+
+:func:`calibrated_cellml` below is the **fallback** for a configured
+circulatory_autogen that predates that writer (probed by
+:func:`ca_substitute_parameter_values`), and for the packaged app with no CA
+directory set. Its report has the same shape as CA's.
 
 When a calibration finishes, CUFLynx substitutes the best-fit parameter values
 into the uploaded flat CellML's ``initial_value`` attributes and saves the result,
@@ -19,11 +31,17 @@ from __future__ import annotations
 
 import re
 
+import phlynx_components
 from cellml_meta import parse_cellml
 from params_for_id import _build_gen_index, resolve_model_qname
 
 _VARIABLE_TAG = re.compile(r"<variable\b[^>]*?/?>")
-_COMPONENT = re.compile(r'<component\b[^>]*?\bname="(?P<name>[^"]+)".*?</component>', re.S)
+# A component with a body. The self-closing `<component .../>` inside an
+# `<import>` is not one, and must not start a match that runs on into the next
+# real component.
+_COMPONENT = re.compile(
+    r'<component\b[^>]*?\bname="(?P<name>[^"]+)"[^>]*(?<!/)>.*?</component>', re.S
+)
 
 
 def _format_value(val: float) -> str:
@@ -54,8 +72,47 @@ def _set_initial_value(component_block: str, var: str, val: float) -> tuple[str,
     return _VARIABLE_TAG.sub(repl, component_block), changed
 
 
+def ca_substitute_parameter_values():
+    """libcuflynx's ``substitute_parameter_values``, or None when the configured
+    circulatory_autogen does not have it (or none is reachable)."""
+    try:
+        from ca_imports import ca_from  # local: runners/ sibling, a leaf
+
+        return ca_from("param_id.calibrated_model", "substitute_parameter_values")
+    except ImportError:
+        return None
+
+
+def substitute_values(cellml_text: str, values: dict[str, float]) -> tuple[str, dict]:
+    """``(new_text, report)``: ``values`` (``vessel/param`` -> value) written into
+    the model's ``initial_value`` attributes, nothing else changed.
+
+    ``report`` is ``{"updated": [...], "unresolved": [...], "resolved": {name:
+    "component/variable"}}``. Written by CA's writer when the configured CA has
+    it, else by :func:`calibrated_cellml`. A model PhLynx wrote with component ids
+    is written by :func:`calibrated_cellml` too: CA's writer finds components by
+    name, so it would write into a modeller's own ``instance_parameters`` rather
+    than PhLynx's ``instance_parameters_1`` (#422) until it reads the ids.
+    """
+    writer = ca_substitute_parameter_values()
+    if writer is None or _has_phlynx_ids(cellml_text):
+        return calibrated_cellml(cellml_text, values)
+    return writer(cellml_text, values)
+
+
+def _has_phlynx_ids(cellml_text: str) -> bool:
+    try:
+        ids = parse_cellml(cellml_text).component_ids.values()
+    except ValueError:
+        return False
+    return any(phlynx_components.is_generated(cid) for cid in ids)
+
+
 def calibrated_cellml(cellml_text: str, best_params: dict[str, float]) -> tuple[str, dict]:
     """Return ``(new_cellml_text, report)`` with each best-fit value substituted.
+
+    The fallback writer, for a CA without ``substitute_parameter_values``; callers
+    go through :func:`substitute_values`.
 
     ``best_params`` maps ``"vessel/param"`` -> value. ``report`` is
     ``{"updated": [...], "unresolved": [...], "resolved": {...}}`` — full names
@@ -68,7 +125,7 @@ def calibrated_cellml(cellml_text: str, best_params: dict[str, float]) -> tuple[
     per #287 that is a change PhLynx will not pick up.
     """
     meta = parse_cellml(cellml_text)
-    gen_index = _build_gen_index(meta.initial_values)
+    gen_index = _build_gen_index(meta.initial_values, meta.component_ids)
 
     # Group the resolved targets by owning component so we substitute inside the
     # right block (bare variable names can repeat across components).

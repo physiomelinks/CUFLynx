@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import ControlPanel from './components/ControlPanel.vue'
 import VariableList from './components/VariableList.vue'
 import PlotPanel from './components/PlotPanel.vue'
@@ -9,8 +9,16 @@ import StatusBar from './components/StatusBar.vue'
 import CalibrationPanel from './components/CalibrationPanel.vue'
 import EmulatorPanel from './components/EmulatorPanel.vue'
 import ProgressPanel from './components/ProgressPanel.vue'
+import { applyReopenedProgress } from './lib/runProgress'
 import SensitivityPanel from './components/SensitivityPanel.vue'
 import UQPanel from './components/UQPanel.vue'
+import WorkflowBar from './components/WorkflowBar.vue'
+import WorkflowView from './components/WorkflowView.vue'
+import { PANEL_KINDS, modeSummary, panelSettings, stepPanel } from './lib/workflowTarget'
+import { workflowFigures } from './lib/workflowFigures'
+import EditObsDataDialog from './components/EditObsDataDialog.vue'
+import EditVariableMappingDialog from './components/EditVariableMappingDialog.vue'
+import IAPanel from './components/IAPanel.vue'
 import AnalysisPanel from './components/AnalysisPanel.vue'
 import CostSensitivityBar from './components/CostSensitivityBar.vue'
 import InputNumber from 'primevue/inputnumber'
@@ -23,6 +31,7 @@ import Dialog from 'primevue/dialog'
 import FileBrowserDialog from './components/FileBrowserDialog.vue'
 import TourOverlay from './components/TourOverlay.vue'
 import { TOUR_STEPS } from './lib/tourSteps'
+import { readStoredWorkingDir, storeWorkingDir, workingDirRefusal } from './lib/workingDir'
 
 import { useModel } from './stores/useModel'
 import { useSliders, shouldUseLog } from './stores/useSliders'
@@ -33,11 +42,15 @@ import { useCalibration, applyBestParams, expandBestFitParams } from './stores/u
 import { useEmulator } from './stores/useEmulator'
 import { useSensitivity } from './stores/useSensitivity'
 import { useUQ } from './stores/useUQ'
+import { anyRunEnded, useWorkflow } from './stores/useWorkflow'
+import { useParamReduction, useIdentifiabilityAnalysis } from './stores/useIdentifiability'
 import {
   getVariables,
   // No `simulate`: a run is a protocol run now, because the run window is the
   // protocol's and a single run has no other way to say how long it lasts.
   runProtocol,
+  liveRunStopped,
+  cancelLiveRun,
   costSensitivity,
   costAtParams,
   getCalibrationDefaults,
@@ -46,15 +59,22 @@ import {
   predictEmulator,
   getSensitivityDefaults,
   getUQDefaults,
+  getIdentifiabilityDefaults,
+  listSobolRuns,
+  adoptReducedParams,
   getConfig,
   setConfig,
+  uploadUserInputs,
   exportPipeline,
   exportPlotting,
   saveParams,
   loadParams,
   errorMessage,
-  loadOutputsDirectory,
+  loadWorkingDir,
   openStudyFromOutputs,
+  getWorkflowStepInput,
+  workflowReductionCandidates,
+  workflowFigureFunctions,
 } from './lib/api'
 import {
   overlayItemsFor,
@@ -66,7 +86,7 @@ import {
   withOverlayVars,
   timeUnit,
 } from './lib/plot'
-import { fmtSigFigs } from './lib/format'
+import { predictionFeatureItems, hasHeldOutData } from './lib/obsDataJson'
 import SearchableSelect from './components/SearchableSelect.vue'
 import SaveParamsDialog from './components/SaveParamsDialog.vue'
 import { requestNotificationPermission } from './lib/notify'
@@ -79,6 +99,7 @@ import {
   solverFieldsForMethod,
   defaultSolverInfo,
   nonDifferentiableInUse,
+  withheldSolverNotes,
 } from './lib/solverConfig'
 
 const model = useModel()
@@ -90,6 +111,11 @@ const calib = useCalibration()
 const sa = useSensitivity()
 const emu = useEmulator()
 const uq = useUQ()
+// The open calibration workflow (CA's libcuflynx.calibration_workflow).
+const wf = useWorkflow()
+// Identifiability tab: parameter reduction, and CA's identifiability analysis.
+const reduction = useParamReduction()
+const iaJob = useIdentifiabilityAnalysis()
 
 // The run window is the obs_data's `protocol_info`, and nothing else can set it.
 // It used to be settable in two places -- these two values as top-bar spinners,
@@ -114,30 +140,65 @@ const preTime = computed(() => obs.protocolPreTime.value ?? DEFAULT_PRE_TIME)
  */
 const canRun = computed(() => model.hasModel.value && obs.hasProtocol.value)
 
-// Where outputs are written. Chosen at startup (see the outputs-dir prompt) and
-// remembered across sessions; blank => backend uses a temp dir.
-const outputsDir = ref(localStorage.getItem('cuflynx-outputs-dir') || '')
-watch(outputsDir, (v) => localStorage.setItem('cuflynx-outputs-dir', v || ''))
+// The working dir: every input and output of the study is kept there. Chosen at
+// startup (see the working-dir prompt) and remembered across sessions; runs are
+// refused until one is set.
+const workingDir = ref(readStoredWorkingDir())
+watch(workingDir, (v) => storeWorkingDir(v))
 
-// What the outputs directory already holds, once someone asks for it (#255).
+// The workflow bar shows the working dir's study workflow: a new working dir (or a
+// reload with one stored) closes another folder's and opens this one's. Debounced, as
+// the field changes on every keystroke; a half-typed relative path is not sent.
+let followTimer = null
+watch(
+  workingDir,
+  (v) => {
+    clearTimeout(followTimer)
+    const dir = (v || '').trim()
+    if (dir && !/^([a-zA-Z]:)?[\\/]/.test(dir)) return
+    followTimer = setTimeout(() => wf.followWorkingDir(dir), 400)
+  },
+  { immediate: true },
+)
+
+// What the working dir already holds, once someone asks for it (#255).
 const loadedOutputs = ref(null)
 const loadingOutputs = ref(false)
 // What the last load actually found, so an empty panel is never left to be
 // interpreted: "there was nothing" and "it could not be read" look identical.
 const loadedOutputsSummary = ref('')
+// Outputs the opened study wrote outside its working dir, which did not travel with it
+// (the load's `warnings`): named in a banner so a missing panel is explained.
+const loadedOutputsWarnings = ref([])
 
 async function loadOutputsFromDirectory(runDir) {
-  const dir = outputsDir.value.trim()
+  const dir = workingDir.value.trim()
   if (!dir || loadingOutputs.value) return
   loadingOutputs.value = true
   try {
-    const found = await loadOutputsDirectory(
+    const found = await loadWorkingDir(
       dir, model.filePrefix.value || undefined, runDir)
     loadedOutputs.value = found
+    loadedOutputsWarnings.value = found.warnings ?? []
+    // A calibration workflow's run directory holds no one study: its steps each
+    // have their own. Reopen it as the workflow, whose tabs load each of them.
+    if (found.workflow_run) {
+      const opened = await wf.open({ runDir: dir })
+      if (opened) {
+        workflowOpen.value = true
+        loadedOutputsSummary.value = `Reopened calibration workflow ${opened.workflow?.workflow_name ?? ''}`
+      } else {
+        sim.setError(wf.error.value)
+      }
+      return
+    }
     if (found.error) {
       sim.setError(found.error)
       return
     }
+    // The working dir's study workflow, which the server has opened: its steps are the
+    // runs made from the panels, in the Workflow tab.
+    if (found.study_workflow?.opened) wf.refresh()
     // The study first: installing a model clears the obs_data, the params and
     // every derived store, so results applied before it would be wiped by it.
     const study = await openLoadedStudy(dir, found)
@@ -148,6 +209,11 @@ async function loadOutputsFromDirectory(runDir) {
       ? `Loaded ${found.found.join(', ')}`
       : 'Found no results in that directory'
     const which = found.run_dir ? ` from ${found.run_dir.split('/').pop()}` : ''
+    // Panels filled from the study workflow's latest step of their kind, by step id.
+    const steps = Object.entries(found.study_steps ?? {})
+    const fromSteps = steps.length
+      ? `. From study workflow steps: ${steps.map(([panel, id]) => `${panel} ${id}`).join(', ')}`
+      : ''
     const missed = found.missing?.length ? ` (could not read: ${found.missing.join('; ')})` : ''
     // The study is reported separately from the panels: "which model am I now
     // looking at" is the question a reopened directory raises first, and the
@@ -157,7 +223,7 @@ async function loadOutputsFromDirectory(runDir) {
       ? `. Opened ${study.name || 'the study'}${study.calibrated ? ' (calibrated model)' : ''}`
       : ''
     const studyFailed = study?.error ? `. Could not open the study: ${study.error}` : ''
-    loadedOutputsSummary.value = parts + which + missed + opened + studyFailed
+    loadedOutputsSummary.value = parts + which + fromSteps + missed + opened + studyFailed
     if (!found.found.length) sim.setError(loadedOutputsSummary.value)
   } catch (e) {
     sim.setError(`Could not read ${dir}: ${errorMessage(e)}`)
@@ -169,7 +235,7 @@ async function loadOutputsFromDirectory(runDir) {
 /**
  * Install the model, obs_data and params_for_id the run was made from (#255).
  *
- * `/api/outputs/load` reports these as paths, which fill no panel: reopening a
+ * `/api/working-dir/load` reports these as paths, which fill no panel: reopening a
  * directory gave its results and an empty Parameters tab, and the only way to
  * get the study back was to find the same three files on disk and drop them in
  * -- which cleared the results that had just been loaded.
@@ -224,6 +290,7 @@ function applyLoadedOutputs(found) {
     const errors = found.calibration.error_vectors ?? {}
     calib.percentError.value = errors.percent ?? null
     calib.stdError.value = errors.std ?? null
+    calib.validation.value = found.calibration.validation ?? null
   }
 
   // Sensitivity is *saved* rather than assigned: the panel reads a selected run
@@ -264,15 +331,20 @@ function applyLoadedOutputs(found) {
   // null is "not scored", which the panel says out loud -- so it is assigned
   // either way rather than only when present.
   uq.coverage.value = found.uq?.coverage ?? null
-  uq.posteriorPredictive.value = null
+  // The predictive band the run saved (a reopened direct run's, or a study workflow uq
+  // step's), or null when it saved none.
+  uq.posteriorPredictive.value = found.uq?.posterior_predictive ?? null
 
   if (found.emulator?.metadata) {
     emu.metadata.value = found.emulator.metadata
     emu.errorPoints.value = found.emulator.error_points ?? null
   }
+  // CA's progress files of those runs: the Progress tab's Sobol, emulator and profile
+  // likelihood sections.
+  applyReopenedProgress(found.run_progress, { sa, emu, ia: iaJob })
 }
-// On open, ask the user where outputs should go (the first thing they see).
-const outputsSetupOpen = ref(false)
+// On open, ask the user for a working dir (the first thing they see).
+const workingDirSetupOpen = ref(false)
 
 // Raw params_for_id entries (incl. param_type, which the slider store drops) and
 // the loaded CSV filename — fed to the params Edit dialog so it can pre-fill rows
@@ -307,6 +379,10 @@ const mpiexecAvailable = ref(true)
 // real server always sends the field, so this is only false in tests and before
 // the first /api/config.
 const mpiexecKnown = ref(false)
+// Whether the installed libcuflynx validates a calibration against held-out data
+// (libcuflynx.param_id.validation, CA #535). CUFLynx does no scoring of its own, so
+// without it there is no Validation section, only a one-line note.
+const heldOutValidationSupported = ref(true)
 
 // circulatory_autogen source directory (top-bar "CA dir"), shared server-side via
 // /api/config. Optional since #18 -- the app bundles libCUFLynx -- and set only to
@@ -323,6 +399,16 @@ const solverOpts = ref({})
 const generatedModelFormat = ref('cellml')
 const solver = ref('CVODE_myokit')
 const solverInfo = ref({})
+// The top bar's solver chip: what the solver runs and with which settings, on hover.
+const solverTitle = computed(() => {
+  const info = solverInfo.value ?? {}
+  const parts = [`Solver: ${solver.value || 'not set'} (model format ${generatedModelFormat.value})`]
+  for (const [key, value] of Object.entries(info)) {
+    if (value !== null && value !== undefined && value !== '') parts.push(`${key}: ${value}`)
+  }
+  parts.push('Click to change it in Settings.')
+  return parts.join('\n')
+})
 
 // Myokit JIT-compiles each model, so without a C toolchain every simulation
 // fails with an opaque 500. The backend detects this (compiler_check.py) and we
@@ -360,6 +446,10 @@ const aadcNotice = computed(() => {
   return 'aadc_python is available (AADC found in both interpreters).'
 })
 
+// Solvers left off the menu because a build tool is missing (BE_batched_c needs
+// CMake and a C compiler), each with why and how to install what is missing.
+const withheldSolvers = computed(() => withheldSolverNotes(cppCompiler.value))
+
 // "Python (scipy solve_ivp) or CasADi" — the compiler-free backends, named by the
 // server so the UI can't drift from CA's solver schema.
 const compilerAlternatives = computed(() =>
@@ -375,6 +465,13 @@ const seed = ref(null)
 // Blank = the production PhLynx that `lib/examples.js` names. Persisted
 // server-side via /api/config, so it survives a restart.
 const phlynxUrl = ref('')
+
+// Module libraries a calibration workflow's library modules are found in (Settings).
+// Persisted server-side via /api/config.
+const moduleLibraryDirs = ref([])
+const libraryBrowserOpen = ref(false)
+// The LaTeX symbols of the model's variables (Variables panel -> "LaTeX symbols").
+const variableMappingOpen = ref(false)
 
 // Last value the server told us about. Hydrating pythonPath from /api/config
 // triggers the watch below, and without this it would POST the value straight
@@ -406,9 +503,12 @@ function applyConfigPayload(c) {
   serverSeed = seed.value
   phlynxUrl.value = c.phlynx_url ?? ''
   serverPhlynxUrl = phlynxUrl.value
+  moduleLibraryDirs.value = [...(c.module_library_dirs ?? [])]
   packaged.value = c.packaged ?? false
   mpiexecAvailable.value = c.mpiexec_available ?? true
   mpiexecKnown.value = c.mpiexec_available !== undefined
+  // An API predating the key says nothing, and then no note is invented.
+  heldOutValidationSupported.value = c.held_out_validation_supported !== false
 }
 
 // Persist the interpreter choice server-side (it's what spawns the runners).
@@ -431,7 +531,7 @@ watch(pythonPath, async (p) => {
       /* keep the list we have; the chips just stay as they were */
     }
     // Emulation is judged by importing autoemulate *in the chosen interpreter*,
-    // so the Emulator tab's availability changes with this pick (#261).
+    // so the Surrogate tab's availability changes with this pick (#261).
     await refreshEmulatorDefaults()
   } catch {
     /* keep the in-session choice even if persisting fails */
@@ -462,6 +562,296 @@ watch(phlynxUrl, async (u) => {
     /* keep the in-session choice even if persisting fails */
   }
 })
+
+async function setModuleLibraryDirs(dirs) {
+  try {
+    applyConfigPayload(await setConfig({ moduleLibraryDirs: dirs }))
+    // The open workflow's steps are resolved against these, so re-read it.
+    if (wf.loaded.value) await wf.refresh()
+  } catch (e) {
+    sim.setError(errorMessage(e))
+  }
+}
+
+function addModuleLibrary(dir) {
+  if (dir && !moduleLibraryDirs.value.includes(dir)) {
+    setModuleLibraryDirs([...moduleLibraryDirs.value, dir])
+  }
+}
+
+function removeModuleLibrary(dir) {
+  setModuleLibraryDirs(moduleLibraryDirs.value.filter((d) => d !== dir))
+}
+
+// -- calibration workflows ------------------------------------------------------
+
+const workflowStates = computed(() =>
+  Object.fromEntries(wf.tabs.value.map((t) => [t.id, wf.stateOf(t.id)])),
+)
+
+// What the next run from the open panel will be, for the Workflow bar's highlight: a new
+// workflow, a new step, or which step it changes (a panel that makes no steps: calibration).
+const workflowSummary = computed(() =>
+  modeSummary(wf.target.value, PANEL_KINDS[leftTab.value] ?? 'calibration', wf.described.value),
+)
+// The Analysis tab's section for the workflow step selected (a step clicked in the chart):
+// only it is open by default. No step selected: every section is.
+const ANALYSIS_SECTIONS = { calibration: 'calibration', combine: 'calibration',
+  sensitivity: 'sensitivity', uq: 'uq', emulation: 'emulator', reduction: 'reduction',
+  identifiability: 'identifiability', figure: 'figures' }
+// A section a finished run opens (a parameter reduction's), until a step is selected.
+const analysisFocusRun = ref(null)
+watch(() => wf.target.value, () => { analysisFocusRun.value = null })
+const analysisFocus = computed(() => {
+  if (analysisFocusRun.value) return analysisFocusRun.value
+  const t = wf.target.value
+  if (t?.mode !== 'edit' || !t.step) return null
+  const step = workflowFileSteps.value.find((s) => s.id === t.step)
+  return step ? (ANALYSIS_SECTIONS[step.kind ?? 'calibration'] ?? null) : null
+})
+const workflowFileSteps = computed(() =>
+  wf.loaded.value ? (wf.described.value?.workflow?.steps ?? []) : [],
+)
+const workflowDetails = computed(() => Object.fromEntries(wf.tabs.value.map((t) => [t.id, t])))
+// CA's status of each step ({status, stale, best_cost, duration_s, ...}), for the chart's boxes.
+const workflowResults = computed(() => wf.described.value?.status?.steps ?? {})
+// what the workflow's figure steps drew, for the Analysis tab
+const workflowFigureList = computed(() => workflowFigures(workflowFileSteps.value, workflowResults.value))
+
+// The panels, so a step clicked in the Workflow view fills its panel's settings.
+const calibrationPanel = ref(null)
+const sensitivityPanel = ref(null)
+const uqPanel = ref(null)
+const emulatorPanel = ref(null)
+const iaPanel = ref(null)
+const PANEL_REFS = { calibration: calibrationPanel, sensitivity: sensitivityPanel, uq: uqPanel,
+  emulator: emulatorPanel, ia: iaPanel }
+
+/**
+ * A step clicked in the Workflow view: its panel opens on the left with the step's
+ * settings, and the next run from it changes this step (and reruns what takes from it).
+ */
+async function onSelectWorkflowStep(stepId) {
+  const step = workflowFileSteps.value.find((s) => s.id === stepId)
+  if (!step) return
+  const panel = stepPanel(step.kind)
+  if (!panel || !PANEL_REFS[panel]) {
+    wf.error.value = `Step ${stepId} is a ${step.kind} step: no panel makes it, so it has no settings to change here.`
+    return
+  }
+  wf.error.value = ''
+  // Selected and its panel filled at once; its model then loads behind (CA generates it,
+  // seconds on a library model), so a click is not held up by it.
+  wf.editStep(stepId)
+  leftTab.value = panel
+  await nextTick()
+  const fill = () => PANEL_REFS[panel].value?.applySettings?.(panelSettings(step, wf.described.value))
+  fill()
+  // the step becomes the current study, so Imports show its model, obs_data and
+  // params_for_id; a step with no model of its own (a set step, a sweep on the target) has
+  // nothing to load
+  if (workflowDetails.value[stepId]?.viewable !== false) {
+    const loaded = await onSelectWorkflowTab(stepId)
+    // a study loaded may re-seed a panel's defaults: fill it again, if still this step's
+    if (loaded && wf.target.value?.step === stepId) fill()
+  }
+}
+
+/** "New step": the next run, of whatever kind, is added as a step. */
+/** New step: a new box on the workflow chart, which the next run of any kind makes a step. */
+async function onNewWorkflowStep() {
+  if (wf.loaded.value) await wf.addDraft()
+  else wf.newStep()
+}
+
+/**
+ * A model box's choice: the box's model becomes the study -- the model alone, taken from a
+ * step already on that model (the target for the target's model), with no obs_data or
+ * params_for_id, since a new step brings its own: Imports highlight its obs_data box. The
+ * chosen tab opens on the left, and its next run makes the box that step.
+ */
+async function onWorkflowDraftAction({ draft, model: boxModel, panel, simulation = false,
+  chooseParams = false }) {
+  const same = (m) => JSON.stringify(m ?? null) === JSON.stringify(boxModel ?? null)
+  const step = boxModel ? workflowFileSteps.value.find((s) => s.model && same(s.model)) : null
+  const target = wf.described.value?.workflow?.target
+  const view = step && workflowDetails.value[step.id]?.viewable !== false ? step.id
+    : boxModel && !step && same(target) ? 'target' : null
+  if (view) await onSelectWorkflowTab(view, { inputs: false })
+  if (chooseParams) {
+    // no panel makes it: Choose parameters in the Workflow view does, from the study's
+    // params_for_id, which Imports ask for
+    needsParams.value = true
+    reductionDraft.value = draft
+    return
+  }
+  needsObsData.value = !simulation || !loadedObsFilename.value || !!view
+  if (simulation) {
+    // no panel makes it: Add simulation in the Workflow view does, once it has its obs_data
+    simulationDraft.value = draft
+    return
+  }
+  wf.chooseDraft(draft)
+  if (PANEL_REFS[panel]) leftTab.value = panel
+}
+
+// The Choose parameters box waiting for its params_for_id (the Workflow view's form), or null.
+const reductionDraft = ref(null)
+// Imports highlight the params_for_id box: a Choose parameters box chooses from its entries.
+const needsParams = ref(false)
+function onReductionMade() {
+  reductionDraft.value = null
+  needsParams.value = false
+}
+
+// The Simulation box waiting for its obs_data (Add simulation in the Workflow view), or null.
+const simulationDraft = ref(null)
+function onSimulationMade() {
+  simulationDraft.value = null
+  needsObsData.value = false
+}
+
+// The chart's edits, for the Workflow view (each async, '' when done, else why not).
+const workflowEditor = {
+  link: (arrow) => wf.link(arrow),
+  unlink: (arrow) => wf.unlink(arrow),
+  place: (node, col, row) => wf.place(node, col, row),
+  placeMany: (positions) => wf.placeMany(positions),
+  addDraft: (col, row, onTarget, boxModel, action) => wf.addDraft(col, row, onTarget, boxModel, action),
+  setValues: (form) => wf.setValues(form),
+  setValueOrigin: (form) => wf.setValueOrigin(form),
+  combine: (form) => wf.combine(form),
+  makeFigure: (form) => wf.makeFigure(form),
+  figureFunctions: () => workflowFigureFunctions(),
+  // a reduction chosen by hand keeps entries of the study's params_for_id
+  chooseParameters: (form) => wf.chooseParameters({ ...form, modelId: model.modelId.value }),
+  reductionCandidates: () => workflowReductionCandidates(model.modelId.value),
+  // a simulation's protocol is the study's obs_data unless its form names a file
+  makeSweep: (form) => wf.makeSweep({ ...form, modelId: model.modelId.value }),
+  chooseDraft: (draft) => wf.chooseDraft(draft),
+  deleteDraft: (draft) => wf.deleteDraft(draft),
+}
+
+/**
+ * Load one tab of the workflow -- a submodule step, or the supermodule -- as the
+ * current study, through the same handlers a dropped archive goes through; then
+ * that step's own calibration results, if it has run, as a reopened run's are.
+ */
+// A new workflow step on the study's model needs an obs_data of its own: Imports highlight
+// its obs_data box until one is given (a model box's choice sets it).
+const needsObsData = ref(false)
+
+/** Open a workflow tab as the study; `{inputs: false}`: its model only, with no obs_data or
+ * params_for_id (a new step on that model brings its own). */
+// The latest tab asked for: a slower load of an earlier click is not applied over it.
+let selectSeq = 0
+async function onSelectWorkflowTab(tabId, options = {}) {
+  needsObsData.value = false
+  const mine = ++selectSeq
+  const opened = await wf.select(tabId, workingDir.value.trim(), options)
+  if (mine !== selectSeq) return false
+  if (!opened) {
+    if (wf.error.value) sim.setError(wf.error.value)
+    return false
+  }
+  await onModelLoaded({ ...opened, filename: opened.model_filename })
+  if (opened.obs_data && !opened.obs_data.error) {
+    onObsDataLoaded({ ...opened.obs_data, model_id: opened.model_id })
+  }
+  if (opened.params_for_id && !opened.params_for_id.error) {
+    onParamsLoaded({
+      params: opened.params_for_id.params,
+      filename: opened.params_for_id.filename,
+    })
+  }
+  // The step's calibration, and its MCMC run beside it, from CA's param_id dir.
+  const runDir = opened.workflow_view?.param_id_output_dir
+  if (runDir) {
+    try {
+      const view = opened.workflow_view
+      const found = await loadWorkingDir(
+        view.results_dir || runDir, view.step_id || view.view, runDir)
+      if (!found.error) applyLoadedOutputs(found)
+    } catch {
+      /* the step's results are a bonus; the model is what the tab is for */
+    }
+  }
+  // A sensitivity, emulation or identifiability step's own results (read with the tab).
+  const stepOutputs = opened.workflow_view?.step_outputs
+  if (stepOutputs) applyLoadedOutputs(stepOutputs)
+  return true
+}
+
+async function onOpenWorkflow(source) {
+  const opened = await wf.open({ ...source, workingDir: workingDir.value.trim() })
+  // Straight to the supermodule: it is what the workflow is about.
+  if (opened?.loaded && !opened.plan_error) await onSelectWorkflowTab('target')
+}
+
+// A run keeps every input and output in the working dir, so without one it is
+// refused here, in the panel that started it, before anything is sent.
+function refuseWithoutWorkingDir(store, stateKey = 'state', errorKey = 'error') {
+  const refusal = workingDirRefusal(workingDir.value)
+  if (!refusal) return false
+  store[stateKey].value = 'error'
+  store[errorKey].value = refusal
+  return true
+}
+
+function onRunWorkflow(which) {
+  if (refuseWithoutWorkingDir(wf, 'jobState', 'jobError')) return
+  wf.run(which)
+}
+
+// The protocol editor on a workflow step's own obs_data ({stepId, document, preselect}).
+const stepEditor = ref(null)
+
+/**
+ * Edit a step's obs_data (as the workflow names it, with the target's names) in the
+ * protocol editor, with `preselect` parameters given lanes to fill in.
+ */
+async function onEditStepInput({ stepId, preselect = [] }) {
+  try {
+    const { content } = await getWorkflowStepInput(stepId, 'obs_data')
+    stepEditor.value = { stepId, document: content ? JSON.parse(content) : null, preselect }
+    workflowOpen.value = true
+  } catch (e) {
+    sim.setError(errorMessage(e))
+  }
+}
+
+/** Saving writes the step's obs_data and CA re-plans ... */
+async function saveStepObsData(document) {
+  const { stepId } = stepEditor.value
+  return { ...(await wf.saveStepInput(stepId, 'obs_data', document)), stepId }
+}
+
+/**
+ * ... then, once the editor has closed, the step's tab opens on it: a parameter still
+ * unset opens the editor again rather than being closed with this one.
+ */
+function onStepObsSaved({ stepId }) {
+  setTimeout(() => onSelectWorkflowTab(stepId))
+}
+
+/** A file the user picked becomes a step's own obs_data or params_for_id. */
+async function onPickStepInput({ stepId, role, file }) {
+  try {
+    const text = await file.text()
+    await wf.saveStepInput(stepId, role, role === 'obs_data' ? JSON.parse(text) : text)
+  } catch (e) {
+    sim.setError(e instanceof SyntaxError ? `${file.name} is not JSON: ${e.message}` : errorMessage(e))
+  }
+}
+
+// A step that stopped on parameters nothing gives a value -- on opening its tab or in a
+// run -- opens its protocol with them selected.
+watch(
+  () => wf.unset.value,
+  (unset) => {
+    if (unset) onEditStepInput({ stepId: unset.step_id, preselect: unset.names })
+  },
+)
 
 async function applyCaDir(dir) {
   try {
@@ -508,6 +898,45 @@ async function applyBackendSolver() {
     solverConfigDirty.value = true
   } catch {
     /* leave previous value on error */
+  }
+}
+
+// Re-read the server's config. An imported study can carry its own solver
+// settings (a user_inputs yaml), which the server adopts; without this the
+// Settings dialog kept showing -- and on its next change, POSTed back -- the old
+// ones.
+async function refreshConfig() {
+  try {
+    applyConfigPayload(await getConfig())
+  } catch {
+    /* keep what is shown; the next Settings open still works */
+  }
+}
+
+// "Load from user_inputs.yaml" in Settings: the server adopts the file's solver,
+// solver_info and dt exactly as if they were set here, and answers with the
+// config to show plus what it adopted / could not.
+const userInputsInput = ref(null)
+const userInputsMessage = ref('')
+const userInputsWarnings = ref([])
+async function onUserInputsPicked(event) {
+  const file = event?.target?.files?.[0]
+  if (event?.target) event.target.value = ''
+  if (!file) return
+  userInputsMessage.value = ''
+  userInputsWarnings.value = []
+  try {
+    const data = await uploadUserInputs(file, workingDir.value)
+    applyConfigPayload(data)
+    const adopted = data.solver_settings
+    userInputsMessage.value = adopted
+      ? `Loaded ${file.name}: ${adopted.solver}, dt = ${adopted.dt}`
+      : `Loaded ${file.name}`
+    userInputsWarnings.value = data.warnings ?? []
+    // Same as a solver change in this dialog: closing it re-runs the model.
+    solverConfigDirty.value = true
+  } catch (e) {
+    userInputsWarnings.value = [errorMessage(e)]
   }
 }
 
@@ -706,8 +1135,48 @@ useRunNotifications(
   notifyOnFinish,
 )
 
-// Left column tab: 'params' | 'sensitivity' | 'calibration' | 'uq'
+// Left column tab: 'params' | 'emulator' | 'ia' | 'sensitivity' | 'calibration' | 'uq'
 const leftTab = ref('params')
+
+// Every calibration, sensitivity and UQ run is a step of the working dir's study workflow,
+// which the server opens in the Workflow tab: re-read it when a run ends and when the tab
+// is opened, so the tab shows each run as a step and the provenance drawn after it.
+watch(
+  () => [calib.state.value, sa.state.value, uq.state.value, emu.state.value,
+    iaJob.state.value, reduction.state.value],
+  (now, before) => {
+    if (anyRunEnded(now, before)) wf.refresh()
+  },
+)
+
+// A run that was to add a step or start a workflow has started: it is made once, and the
+// panel's next run changes it (a run the server refused leaves the choice as it was).
+for (const [job, kind] of [[calib, 'calibration'], [sa, 'sensitivity'], [uq, 'uq'],
+  [emu, 'emulation'], [iaJob, 'identifiability'], [reduction, 'reduction']]) {
+  watch(
+    () => job.state.value,
+    (state) => {
+      if (state === 'running') wf.ranTarget(kind)
+    },
+  )
+}
+
+// The Workflow view, dropped down over the centre column from the Workflow bar (the
+// Output plots, Progress and Analysis tabs wait minimised at the bottom).
+const workflowOpen = ref(false)
+watch(workflowOpen, async (open) => {
+  if (open) {
+    await wf.refresh()
+    await wf.listIn(workingDir.value.trim(), { reopen: true })
+  }
+})
+// A run of a new step or workflow, a delete or another workflow opened: list them again.
+watch(
+  () => [wf.described.value?.path, wf.described.value?.workflow?.steps?.length],
+  () => {
+    if (workflowOpen.value) wf.listIn(workingDir.value.trim())
+  },
+)
 
 // Emulator (CA #333). `emuDefaults` is CA's emulation settings schema;
 // `emuSettings` mirrors the panel's live values so a run can carry them.
@@ -845,11 +1314,22 @@ async function onWindowDrop(event) {
     await importer.handleOmex(files)
     return
   }
+  if (files.some((f) => importer.isZipName?.(f.name))) {
+    dropHint.value = ''
+    await importer.handleWorkingDirZip(files)
+    return
+  }
+  if (files.some((f) => importer.isStudyManifestName?.(f.name))) {
+    dropHint.value = ''
+    await importer.handleStudyManifest(files)
+    return
+  }
   // Deliberately not guessed at. A .cellml could be the model or a sister file,
   // and a .json could be either of the two studies files -- the box is what says
   // which, so the honest answer is to name the box rather than pick one.
   dropHint.value =
-    `Only a .omex study can be dropped anywhere on the page. Drop ` +
+    `Only a .omex study, a .zip of a working dir or a *_cuflynx_study.json can be ` +
+    `dropped anywhere on the page. Drop ` +
     `${files.length > 1 ? 'these files' : `"${files[0].name}"`} on the model, ` +
     `obs_data or params box to say which it is.`
 }
@@ -1254,7 +1734,7 @@ async function runCostSensitivity() {
       bounds: costSensBounds(),
       modifiers: sliders.modifierSpecs.value,
       outputs: liveOutputs(),
-      outputsDir: outputsDir.value.trim() || undefined,
+      workingDir: workingDir.value.trim() || undefined,
       signal: controller.signal,
     })
     if (token !== costSensToken) return
@@ -1301,22 +1781,6 @@ watch(timeUnitOverride, (v) => localStorage.setItem('cuflynx-time-unit', (v || '
 const timeUnitLabel = computed(
   () => modelTimeUnit.value || timeUnitOverride.value.trim(),
 )
-
-// The run window, said out loud beside the experiment count: how long the study
-// simulates for, and how much of that is warm-up. The count alone described the
-// protocol's shape but never its length, which is the number the removed t₁/pre
-// spinners used to show — so it is stated here instead of nowhere.
-const runWindowLabel = computed(() => {
-  const unit = timeUnitLabel.value ? ` ${timeUnitLabel.value}` : ''
-  const pre = preTime.value
-    ? ` (+ ${fmtSigFigs(preTime.value, 4)}${unit} pre)`
-    : ''
-  return `${fmtSigFigs(simTime.value, 4)}${unit}${pre}`
-})
-
-const runWindowTitle =
-  'The run window comes from the obs_data protocol_info: the total of its ' +
-  'sim_times, after the total of its pre_times. Edit the protocol to change it.'
 
 // Variables the user has overlaid onto an existing plot (issue #196), as
 // cellKey -> [qname]. Keyed by the *cell* rather than by an id of its own
@@ -1530,14 +1994,16 @@ const calibDefaults = ref({})
 const calibPythons = ref([])
 const saDefaults = ref({})
 const uqDefaults = ref({})
+const iaDefaults = ref({})
+const sobolRuns = ref([])
 onMounted(() => {
-  // Ask where outputs should go, and mean "first": this line used to sit at the
+  // Ask for a working dir, and mean "first": this line used to sit at the
   // *end* of six sequential round trips below, one of which walks the filesystem
   // looking for Python interpreters. So the one thing the user is actually
   // waiting on arrived last, after everything they could not see. Nothing below
-  // feeds this dialog -- it opens at $HOME and only ever *writes* outputsDir --
+  // feeds this dialog -- it opens at $HOME and only ever *writes* workingDir --
   // so it does not have to wait for any of it.
-  outputsSetupOpen.value = true
+  workingDirSetupOpen.value = true
 
   // ...and the six are independent of each other too, so they go out together
   // rather than in a chain: the wait is now the slowest one, not the sum. Each
@@ -1548,8 +2014,12 @@ onMounted(() => {
   settle(getCalibrationDefaults(), (v) => (calibDefaults.value = v))
   settle(getSensitivityDefaults(), (v) => (saDefaults.value = v))
   settle(getUQDefaults(), (v) => (uqDefaults.value = v))
+  settle(getIdentifiabilityDefaults(), (v) => (iaDefaults.value = v))
+  refreshSobolRuns()
   settle(getCalibrationPythons(), (v) => (calibPythons.value = v.pythons ?? []))
   settle(getConfig(), applyConfigPayload)
+  // A workflow the server still has open (the page was reloaded).
+  wf.refresh()
   refreshEmulatorDefaults()
 })
 
@@ -1703,6 +2173,7 @@ function runTimes() {
 }
 
 function onRunCalibration(settings) {
+  if (refuseWithoutWorkingDir(calib)) return
   // Remembered because the cost it reports is only interpretable with it: a
   // calibration on the emulator minimises the em cost, and the Output plots'
   // cost is the solver's (#333).
@@ -1712,10 +2183,15 @@ function onRunCalibration(settings) {
     {
       ...settings,
       ...runTimes(),
+      workflow_target: wf.runTarget('calibration'),
       python_path: pythonPath.value,
-      config_outputs_dir: outputsDir.value.trim() || undefined,
-      // Evaluate the trained emulator instead of the solver (Emulator tab).
+      working_dir: workingDir.value.trim() || undefined,
+      // Evaluate the trained emulator instead of the solver (Surrogate tab).
       use_emulator: emu.useEmulator.value,
+      // Which bundle, when the study holds several. Sent with the run rather than
+      // derived there: the panel shows one emulator's numbers, and a run that
+      // silently evaluated a different one would be reported against the wrong R2.
+      emulator_dir: emu.selectedDir.value || undefined,
     },
     // Live slider values, so gradient descent can start from the user's current
     // parameter values when "start from current" is enabled (#65). The θ-aware
@@ -1732,6 +2208,17 @@ const calibSettings = ref({})
 // the current configuration without needing a run first.
 const saSettings = ref({})
 const uqSettings = ref({})
+
+// The prediction_items "Include prediction items" (Sensitivity / Emulator) can use:
+// those with an operation. Only gates the checkbox; libcuflynx picks the features.
+const predictionFeatureCount = computed(
+  () => predictionFeatureItems(obs.predictionItems.value).length,
+)
+const validationNote = computed(() =>
+  !heldOutValidationSupported.value && hasHeldOutData(obs.predictionItems.value)
+    ? 'Validation against the held-out data in prediction_items needs a newer libcuflynx (one with param_id.validation).'
+    : '',
+)
 
 // ----- Pipeline export ----------------------------------------------------
 const exportPromptOpen = ref(false)
@@ -1757,7 +2244,12 @@ function exportPayload() {
     sensitivity: { ...saSettings.value },
     uq: { ...uqSettings.value },
     enabled: exportEnabled.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
+    working_dir: workingDir.value.trim() || undefined,
+    // The Emulator tab: the bundle carries the emulator the analyses use, or trains
+    // one with the panel's settings when none is trained.
+    use_emulator: emu.useEmulator.value,
+    emulator_dir: emu.selectedDir.value || undefined,
+    emulator: { ...emuSettings.value },
   }
 }
 
@@ -1781,7 +2273,7 @@ async function onExportPlotting() {
   if (!model.hasModel.value) return
   try {
     const res = await exportPlotting({
-      config_outputs_dir: outputsDir.value.trim() || undefined,
+      working_dir: workingDir.value.trim() || undefined,
       // Names the panels after the loaded obs_data, so the script is something
       // you edit rather than something you read around (#144).
       model_id: model.modelId.value || undefined,
@@ -1796,6 +2288,7 @@ async function onExportPlotting() {
 // When 'run calibration first' is set, fold in the calibration panel's GA
 // settings rather than duplicating those controls in the sensitivity panel.
 function onRunSensitivity(settings) {
+  if (refuseWithoutWorkingDir(sa)) return
   const calibFirst = settings.run_calibration_first
     ? {
         param_id_method: calibSettings.value.param_id_method,
@@ -1810,10 +2303,15 @@ function onRunSensitivity(settings) {
       ...settings,
       ...calibFirst,
       ...runTimes(),
+      workflow_target: wf.runTarget('sensitivity'),
       python_path: pythonPath.value,
-      config_outputs_dir: outputsDir.value.trim() || undefined,
-      // Evaluate the trained emulator instead of the solver (Emulator tab).
+      working_dir: workingDir.value.trim() || undefined,
+      // Evaluate the trained emulator instead of the solver (Surrogate tab).
       use_emulator: emu.useEmulator.value,
+      // Which bundle, when the study holds several. Sent with the run rather than
+      // derived there: the panel shows one emulator's numbers, and a run that
+      // silently evaluated a different one would be reported against the wrong R2.
+      emulator_dir: emu.selectedDir.value || undefined,
     },
     // Live slider values, so local SA with nominal="current" linearises about the
     // user's current parameter values rather than the model defaults (#65). The
@@ -1830,18 +2328,102 @@ watch(
   },
 )
 
-// UQ reuses the same prerequisites as calibration (model + obs + params).
-function onRunUQ(settings) {
-  uq.start(model.modelId.value, {
+// ----- Identifiability tab -----------------------------------------------
+// The Sobol runs a reduction can read: under the outputs directory, and the
+// session's last finished Sobol run.
+async function refreshSobolRuns() {
+  try {
+    const { runs } = await listSobolRuns(workingDir.value.trim())
+    sobolRuns.value = runs ?? []
+  } catch {
+    sobolRuns.value = []
+  }
+}
+watch(workingDir, refreshSobolRuns)
+watch(
+  () => [sa.state.value, reduction.state.value],
+  ([saState, rdState]) => {
+    if (saState === 'done' || rdState === 'done') refreshSobolRuns()
+  },
+)
+
+// "Run a Sobol analysis first" takes the Sensitivity tab's Sobol settings
+// (num_samples, sample_type, cores); the backend sets the method to sobol.
+function onRunReduction(settings) {
+  const sobolFirst = settings.source === 'sobol_first' ? { ...saSettings.value } : {}
+  reduction.start(
+    model.modelId.value,
+    {
+      ...sobolFirst,
+      ...settings,
+      ...runTimes(),
+      // a reduction step of the Sobol step's workflow (or of a Sobol step made first)
+      workflow_target: wf.runTarget('reduction'),
+      python_path: pythonPath.value,
+      working_dir: workingDir.value.trim() || undefined,
+      use_emulator: emu.useEmulator.value,
+    },
+    { ...sliders.analysisDict.value },
+  )
+}
+
+// "Calibrate these": the reduced params_for_id becomes the study's, through the
+// same path as an uploaded one, and the Calibration tab opens on it.
+async function onAdoptReduction(reportDir) {
+  try {
+    const data = await adoptReducedParams(model.modelId.value, reportDir)
+    onParamsLoaded(data)
+    leftTab.value = 'calibration'
+  } catch (e) {
+    reduction.error.value = errorMessage(e)
+  }
+}
+
+// CA's identifiability analysis runs through the UQ runner's laplace method.
+function onRunIA(settings) {
+  iaJob.start(model.modelId.value, {
     ...settings,
     ...runTimes(),
+    // a Laplace analysis is a uq step of the study workflow; a profile likelihood an
+    // identifiability step
+    workflow_target: wf.runTarget(
+      settings.ia_options?.method === 'profile_likelihood' ? 'identifiability' : 'uq'),
     python_path: pythonPath.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
+    working_dir: workingDir.value.trim() || undefined,
     use_emulator: emu.useEmulator.value,
   })
 }
 
+// UQ reuses the same prerequisites as calibration (model + obs + params).
+function onRunUQ(settings) {
+  if (refuseWithoutWorkingDir(uq)) return
+  uq.start(model.modelId.value, {
+    ...settings,
+    ...runTimes(),
+    workflow_target: wf.runTarget('uq'),
+    python_path: pythonPath.value,
+    working_dir: workingDir.value.trim() || undefined,
+    use_emulator: emu.useEmulator.value,
+    // Which bundle, when the study holds several. Sent with the run rather than
+    // derived there: the panel shows one emulator's numbers, and a run that
+    // silently evaluated a different one would be reported against the wrong R2.
+    emulator_dir: emu.selectedDir.value || undefined,
+  })
+}
+
+/**
+ * Read the study through a different trained emulator.
+ *
+ * Everything downstream follows because the store reloads: the panel's per-feature
+ * table, the Analysis view's held-out points, and the `emulator_dir` sent with the
+ * next run all come from the bundle picked here.
+ */
+function onSelectEmulatorBundle(dir) {
+  emu.select(dir, model.modelId.value, workingDir.value.trim() || '')
+}
+
 function onTrainEmulator(settings) {
+  if (refuseWithoutWorkingDir(emu)) return
   emu.train(model.modelId.value, {
     ...settings,
     // The SAME window every other analysis uses. CA's staleness fingerprint covers
@@ -1850,8 +2432,9 @@ function onTrainEmulator(settings) {
     // stale -- "the model, parameter bounds, obs_data operations or protocol
     // differ". One source for the window is what keeps every side equal.
     ...runTimes(),
+    workflow_target: wf.runTarget('emulation'),
     python_path: pythonPath.value,
-    config_outputs_dir: outputsDir.value.trim() || undefined,
+    working_dir: workingDir.value.trim() || undefined,
   })
 }
 
@@ -1880,7 +2463,7 @@ async function refreshEmulatorFeatures() {
     const res = await predictEmulator(
       model.modelId.value,
       { ...sliders.analysisDict.value },
-      { config_outputs_dir: outputsDir.value.trim() || undefined },
+      { working_dir: workingDir.value.trim() || undefined },
     )
     const map = {}
     ;(res.labels ?? []).forEach((label, i) => {
@@ -1949,7 +2532,7 @@ const emuUnavailable = computed(
 )
 const emuUnavailableTitle = computed(() =>
   emuDefaults.value?.unavailable_reason ||
-  'Emulation is unavailable — open the Emulator tab for how to enable it.',
+  'Emulation is unavailable — open the Surrogate tab for how to enable it.',
 )
 
 // ...and nothing downstream may keep evaluating a surrogate that cannot be
@@ -2011,7 +2594,8 @@ async function refreshBestFitScores() {
         outputs: liveOutputs(),
         simTime: simTime.value,
         preTime: preTime.value,
-        outputsDir: outputsDir.value.trim() || undefined,
+        workingDir: workingDir.value.trim() || undefined,
+        emulatorDir: emu.selectedDir.value || undefined,
       },
     )
     bestFitScores.value = { model: res.cost ?? null, emulator: res.emulator_cost ?? null }
@@ -2038,11 +2622,21 @@ watch(
 // directory changes: an emulator outlives the session that trained it, and one
 // trained by circulatory_autogen's own script counts too.
 watch(
-  () => [model.modelId.value, outputsDir.value],
+  () => [model.modelId.value, workingDir.value],
   () => {
-    emu.refresh(model.modelId.value, outputsDir.value.trim() || '')
+    emu.refresh(model.modelId.value, workingDir.value.trim() || '')
   },
   { immediate: true },
+)
+
+// When a parameter reduction finishes, show what it kept: the Analysis tab, its section open.
+watch(
+  () => reduction.state.value,
+  (state) => {
+    if (state !== 'done') return
+    analysisFocusRun.value = 'reduction'
+    centerTab.value = 'analysis'
+  },
 )
 
 // When a UQ run finishes, surface the posterior distributions automatically.
@@ -2065,7 +2659,17 @@ watch(
 )
 
 async function onModelLoaded(data) {
+  // Not awaited: the solver settings an import adopted only need to reach the
+  // Settings dialog, and the model must not wait on them.
+  refreshConfig()
   model.setModel(data)
+  // An archive that carries a calibration_workflow.json: offer it in the Workflow
+  // tab rather than opening it, which would replace this study with its tabs --
+  // unless it calibrates selections of PhLynx instances, which is what it was sent for.
+  if (data?.calibration_workflow) wf.offered.value = data.calibration_workflow
+  const openWorkflowNow = data?.calibration_workflow?.select_steps?.length
+    ? data.calibration_workflow
+    : null
   obs.clearObsData()
   paramsForId.clear()
   loadedParamsRaw.value = []
@@ -2087,6 +2691,11 @@ async function onModelLoaded(data) {
     model.setVariables(vars)
   } catch (e) {
     sim.setError(String(e))
+  }
+  // Once this study has loaded, so its late answers cannot land on the workflow's tab.
+  if (openWorkflowNow) {
+    workflowOpen.value = true
+    await onOpenWorkflow({ path: openWorkflowNow.path })
   }
 }
 
@@ -2127,7 +2736,7 @@ function onResetBest() {
 }
 
 // Whether the UQ on screen carries a posterior median, to gate the "Reset to UQ
-// median" button. Present for a run loaded from an outputs directory as much as
+// median" button. Present for a run loaded from a working dir as much as
 // for one just finished here: both fill `uq.params` from the same summary.
 const hasUqMedian = computed(() => uq.medianParams.value != null)
 
@@ -2155,7 +2764,7 @@ const lastSavedParamsPath = ref(localStorage.getItem('cuflynx-last-saved-params'
 const savedParamsStart = computed(
   () =>
     lastSavedParamsPath.value ||
-    (outputsDir.value.trim() ? `${outputsDir.value.trim()}/manual_params.npy` : ''),
+    (workingDir.value.trim() ? `${workingDir.value.trim()}/manual_params.npy` : ''),
 )
 
 // Saved runs available to overlay on the plots (issue #126).
@@ -2223,7 +2832,7 @@ async function onSaveParams({ filename }) {
       sliders.paramDict.value,
       sliders.order.value,
       filename,
-      outputsDir.value.trim(),
+      workingDir.value.trim(),
       await savedRunResult(),
     )
     if (path) {
@@ -2233,7 +2842,7 @@ async function onSaveParams({ filename }) {
     // The parameters saved; only the traces alongside them failed, so say so
     // rather than letting the run silently not be there to tick later.
     if (outputsError) sim.setError(`Parameters saved, but ${outputsError}`)
-    await savedRuns.refresh(outputsDir.value.trim())
+    await savedRuns.refresh(workingDir.value.trim())
   } catch (e) {
     sim.setError(errorMessage(e))
   }
@@ -2241,7 +2850,7 @@ async function onSaveParams({ filename }) {
 
 // The saved runs live in the output directory, so the list follows it — and is
 // read once at startup for whatever was saved in a previous session.
-watch(outputsDir, (v) => savedRuns.refresh((v || '').trim()), { immediate: true })
+watch(workingDir, (v) => savedRuns.refresh((v || '').trim()), { immediate: true })
 
 // The calibration best fit as a tickable overlay (#126). Its parameter values
 // exist the moment a calibration finishes, but its *traces* do not — nothing has
@@ -2386,7 +2995,7 @@ async function runWithParams(params, { allOutputs = false } = {}) {
   ]
   const data = await runProtocol(model.modelId.value, params, {
     outputs,
-    outputsDir: outputsDir.value.trim() || undefined,
+    workingDir: workingDir.value.trim() || undefined,
   })
   return { experiments: data.experiments }
 }
@@ -2409,7 +3018,7 @@ async function runSimulation() {
     const outputs = liveOutputs()
     const data = await runProtocol(model.modelId.value, sliders.paramDict.value, {
       outputs,
-      outputsDir: outputsDir.value.trim() || undefined,
+      workingDir: workingDir.value.trim() || undefined,
     })
     backendFallback.value = data.backend_fallback ?? null
     sim.setExperiments(
@@ -2427,7 +3036,28 @@ async function runSimulation() {
     // asked for it (#188).
     scheduleCostSensitivity()
   } catch (e) {
-    sim.setError(errorMessage(e))
+    const stopped = liveRunStopped(e)
+    // A newer run took over: it owns the status bar now.
+    if (stopped === 'superseded') return
+    if (stopped === 'cancelled') sim.setCancelled()
+    else sim.setError(errorMessage(e))
+  }
+}
+
+// Why the last Cancel could not stop the run (an in-process run), shown beside it.
+const cancelNote = ref('')
+watch(
+  () => sim.status.value,
+  (s) => {
+    if (s !== 'running') cancelNote.value = ''
+  },
+)
+async function cancelSimulation() {
+  try {
+    const res = await cancelLiveRun()
+    cancelNote.value = res?.cancelled ? '' : res?.reason || ''
+  } catch (e) {
+    cancelNote.value = errorMessage(e)
   }
 }
 
@@ -2603,7 +3233,7 @@ watch(() => obs.obsData.value, scheduleRun)
   <div v-if="draggingFile" class="page-drop-veil" data-testid="page-drop-veil">
     <div class="page-drop-card">
       <i class="pi pi-inbox" />
-      <strong>Drop a .omex study anywhere</strong>
+      <strong>Drop a .omex study or a .zip of a working dir anywhere</strong>
       <small>Models, obs_data and params_for_id go to their own boxes</small>
     </div>
   </div>
@@ -2619,6 +3249,19 @@ watch(() => obs.obsData.value, scheduleRun)
       <!-- Shared Python interpreter for calibration / sensitivity / UQ runs.
            Not a <label>: two controls (Select + browse Button) would make label
            clicks forward to the button and hijack the dropdown. -->
+      <!-- The solver every run uses (Settings): said here because it decides what a run is
+           (which backends, which gradients, whether a model is regenerated), and it is
+           otherwise only visible with the Settings dialog open. -->
+      <button
+        type="button"
+        class="solver-chip"
+        data-testid="solver-chip"
+        :title="solverTitle"
+        @click="settingsOpen = true"
+      >
+        <span class="py-label">Solver</span>
+        <strong>{{ solver || '—' }}</strong>
+      </button>
       <div class="python-bar" data-testid="python-bar">
         <span class="py-label" title="Interpreter/env used for calibration, sensitivity and UQ">
           Python
@@ -2671,20 +3314,12 @@ watch(() => obs.obsData.value, scheduleRun)
         @click="settingsOpen = true"
       />
       <!--
-        The run window, in the one place it is stated. There are no t₁/pre
-        spinners to disagree with it and no Run button: the protocol says how
-        long the run is, and every parameter change re-runs it.
+        No t₁/pre spinners and no Run button: the obs_data protocol says how long the
+        run is, and every parameter change re-runs it. Without one there is nothing to
+        run over, which is said here.
       -->
       <div
-        v-if="obs.hasProtocol.value"
-        class="protocol-summary"
-        data-testid="protocol-summary"
-        :title="runWindowTitle"
-      >
-        Protocol: {{ obs.experimentCount.value }} experiment(s) · {{ runWindowLabel }}
-      </div>
-      <div
-        v-else-if="model.hasModel.value"
+        v-if="!obs.hasProtocol.value && model.hasModel.value"
         class="protocol-summary no-protocol"
         data-testid="no-protocol"
       >
@@ -2749,7 +3384,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :title="emuUnavailable ? emuUnavailableTitle : null"
             @click="leftTab = 'emulator'"
           >
-            Emulator
+            Surrogate
             <!-- Deliberately unmarked. An emulator is optional, so not having one is
                  a feature you are not using rather than something wrong, and an amber
                  tab with a warning glyph made a healthy app look faulty. The tooltip
@@ -2766,6 +3401,19 @@ watch(() => obs.obsData.value, scheduleRun)
               v-else-if="emu.useEmulator.value"
               class="tab-dot tab-dot-on"
               title="analyses are using the emulator"
+            />
+          </button>
+          <button
+            class="left-tab"
+            :class="{ active: leftTab === 'ia' }"
+            data-testid="tab-ia"
+            @click="leftTab = 'ia'"
+          >
+            Identifiability
+            <span
+              v-if="reduction.running.value || iaJob.running.value"
+              class="tab-dot"
+              title="identifiability running"
             />
           </button>
           <button
@@ -2823,6 +3471,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'emulator'" class="left-pane left-pane-scroll">
           <EmulatorPanel
+            ref="emulatorPanel"
             v-model="emu.useEmulator.value"
             :defaults="emuDefaults"
             :can-run="canCalibrate"
@@ -2833,18 +3482,47 @@ watch(() => obs.obsData.value, scheduleRun)
             :metadata="emu.metadata.value"
             :features="emu.features.value"
             :reusable="emu.reusable.value"
+            :prediction-feature-count="predictionFeatureCount"
+            :choices="emu.choices.value"
+            :emulator-dir="emu.emulatorDir.value"
+            :chosen="emu.chosen.value"
             @run="onTrainEmulator"
             @change="(s) => (emuSettings = s)"
+            @select-bundle="onSelectEmulatorBundle"
             @cancel="emu.cancel()"
+          />
+        </div>
+        <div v-show="leftTab === 'ia'" class="left-pane left-pane-scroll">
+          <IAPanel
+            ref="iaPanel"
+            :defaults="iaDefaults"
+            :sobol-runs="sobolRuns"
+            :can-run="canCalibrate"
+            :reduction-state="reduction.state.value"
+            :reduction-lines="reduction.lines.value"
+            :reduction-error="reduction.error.value"
+            :reduction="reduction.reduction.value"
+            :ia-state="iaJob.state.value"
+            :ia-lines="iaJob.lines.value"
+            :ia-error="iaJob.error.value"
+            :ia-params="iaJob.params.value"
+            :ia-profiles="iaJob.profiles.value"
+            @run-reduction="onRunReduction"
+            @cancel-reduction="reduction.cancel()"
+            @refresh-runs="refreshSobolRuns"
+            @run-ia="onRunIA"
+            @cancel-ia="iaJob.cancel()"
           />
         </div>
         <div v-show="leftTab === 'sensitivity'" class="left-pane left-pane-scroll">
           <SensitivityPanel
+            ref="sensitivityPanel"
             :defaults="saDefaults"
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
             :ad-available="adAvailable"
             :gradient-sources="localGradientSources"
+            :prediction-feature-count="predictionFeatureCount"
             :lines="sa.lines.value"
             :state="sa.state.value"
             :error="sa.error.value"
@@ -2855,6 +3533,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'calibration'" class="left-pane left-pane-scroll">
           <CalibrationPanel
+            ref="calibrationPanel"
             :defaults="calibDefaults"
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
@@ -2872,6 +3551,7 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
         <div v-show="leftTab === 'uq'" class="left-pane left-pane-scroll">
           <UQPanel
+            ref="uqPanel"
             :defaults="uqDefaults"
             :can-run="canCalibrate"
             :mpiexec-available="mpiexecAvailable"
@@ -2886,21 +3566,108 @@ watch(() => obs.obsData.value, scheduleRun)
         </div>
       </aside>
 
-      <section class="col col-center">
-        <div class="left-tabs">
+      <section class="col col-center" :class="{ 'wf-open': workflowOpen }">
+        <WorkflowBar
+          :name="wf.name.value"
+          :open="workflowOpen"
+          :summary="workflowSummary"
+          @toggle="workflowOpen = !workflowOpen"
+        />
+        <WorkflowView
+          v-if="workflowOpen"
+          :workflows="wf.workflows.value"
+          :open-path="wf.loaded.value ? (wf.described.value?.path ?? null) : null"
+          :target="wf.target.value"
+          :steps="workflowFileSteps"
+          :details="workflowDetails"
+          :states="workflowStates"
+          :results="workflowResults"
+          :workflow-target="wf.described.value?.workflow?.target ?? null"
+          :figures="wf.described.value?.workflow?.external_figures ?? []"
+          :origins="wf.described.value?.value_origins ?? null"
+          :rename-step="(step, to) => wf.renameStep(step, to)"
+          :layout="wf.described.value?.layout ?? null"
+          :link-kinds="wf.described.value?.link_kinds ?? {}"
+          :fixed-parameters="!!wf.described.value?.fixed_parameters"
+          :editor="workflowEditor"
+          :step-kinds="wf.described.value?.step_kinds ?? []"
+          :draft-panels="Object.keys(PANEL_REFS)"
+          :simulation-draft="simulationDraft"
+          :reduction-draft="reductionDraft"
+          :study-has-params="!!loadedParamsFilename"
+          :manual-reduction="!!wf.described.value?.manual_reduction"
+          :study-has-obs="!!loadedObsFilename"
+          :parameters-offered="model.variables.value.params ?? []"
+          :editing="workflowSummary.mode !== 'new_workflow' ? workflowSummary.step : null"
+          :pending-delete="wf.pendingDelete.value"
+          :busy="wf.busy.value"
+          :running="wf.running.value"
+          :described="wf.described.value"
+          :tabs="wf.tabs.value"
+          :selected="wf.selected.value"
+          :view="wf.view.value"
+          :job-state="wf.jobState.value"
+          :current-step="wf.currentStep.value"
+          :job-error="wf.jobError.value"
+          :lines="wf.lines.value"
+          :error="wf.error.value"
+          :offered="wf.offered.value"
+          :unset="wf.unset.value"
+          :warm-up="wf.warmUp.value"
+          :working-dir="workingDir"
+          :module-library-dirs="moduleLibraryDirs"
+          :mpiexec-available="mpiexecAvailable"
+          :provenance="wf.provenance.value"
+          @open-workflow="(path) => onOpenWorkflow({ path })"
+          @new-workflow="wf.newWorkflow()"
+          @new-step="onNewWorkflowStep"
+          @draft-action="onWorkflowDraftAction"
+          @simulation-made="onSimulationMade"
+          @reduction-made="onReductionMade"
+          @select-step="onSelectWorkflowStep"
+          @delete-step="(id) => wf.deleteStep(id)"
+          @confirm-delete="wf.confirmDelete()"
+          @cancel-delete="wf.cancelDelete()"
+          @move-step="({ step, index }) => wf.moveStep(step, index)"
+          @open-step-view="onSelectWorkflowTab"
+          @open="onOpenWorkflow"
+          @close="wf.close()"
+          @select="onSelectWorkflowTab"
+          @run="onRunWorkflow"
+          @cancel="wf.cancel()"
+          @open-settings="settingsOpen = true"
+          @edit-input="onEditStepInput"
+          @pick-input="onPickStepInput"
+          @build-tabs="(everything) => wf.buildTabs(everything)"
+        />
+        <EditObsDataDialog
+            v-if="stepEditor"
+            :visible="!!stepEditor"
+            :document="stepEditor.document"
+            :preselect="stepEditor.preselect"
+            :save="saveStepObsData"
+            :model-variables="model.variables.value"
+            :header="`obs_data of step ${stepEditor.stepId}`"
+            hint="This step's own obs_data, naming the target's instances. Saving writes it and
+              opens the step again; it and every step after it rerun."
+            data-testid="workflow-step-obs"
+            @saved="onStepObsSaved"
+            @update:visible="(v) => { if (!v) stepEditor = null }"
+          />
+        <div class="left-tabs center-tabs" data-testid="center-tabs">
           <button
             class="left-tab"
-            :class="{ active: centerTab === 'plots' }"
+            :class="{ active: centerTab === 'plots' && !workflowOpen }"
             data-testid="tab-plots"
-            @click="centerTab = 'plots'"
+            @click="centerTab = 'plots'; workflowOpen = false"
           >
             Output plots
           </button>
           <button
             class="left-tab"
-            :class="{ active: centerTab === 'progress' }"
+            :class="{ active: centerTab === 'progress' && !workflowOpen }"
             data-testid="tab-progress"
-            @click="centerTab = 'progress'"
+            @click="centerTab = 'progress'; workflowOpen = false"
           >
             Progress
             <span
@@ -2911,9 +3678,9 @@ watch(() => obs.obsData.value, scheduleRun)
           </button>
           <button
             class="left-tab"
-            :class="{ active: centerTab === 'analysis' }"
+            :class="{ active: centerTab === 'analysis' && !workflowOpen }"
             data-testid="tab-analysis"
-            @click="centerTab = 'analysis'"
+            @click="centerTab = 'analysis'; workflowOpen = false"
           >
             Analysis
             <span
@@ -2939,6 +3706,16 @@ watch(() => obs.obsData.value, scheduleRun)
             <summary>To enable CVODE_myokit, install a C compiler</summary>
             <pre class="compiler-hint">{{ cppCompiler.hint }}</pre>
           </details>
+        </Message>
+
+        <Message
+          v-if="loadedOutputsWarnings.length"
+          severity="warn"
+          :closable="false"
+          class="warn-banner"
+          data-testid="outside-outputs-warning"
+        >
+          {{ loadedOutputsWarnings.join(' ') }}
         </Message>
 
         <Message
@@ -3128,25 +3905,38 @@ watch(() => obs.obsData.value, scheduleRun)
             :uq-running="uq.running.value"
             :uq-state="uq.state.value"
             :param-labels="paramLabels"
+            :emulator-progress="emu.progress.value"
+            :reduction-progress="reduction.progress.value"
+            :reduction-sobol="reduction.sobolProgress.value"
+            :profile-progress="iaJob.progress.value"
+            :sensitivity-progress="sa.progress.value"
+            :sensitivity-sobol="sa.sobolProgress.value"
           />
         </div>
         <div v-show="centerTab === 'analysis'" class="plot-groups">
           <AnalysisPanel
+            :focus="analysisFocus"
+            :reduction="reduction.reduction.value"
+            @adopt-reduction="onAdoptReduction"
             :indices="sa.indices.value"
             :param-names="sa.paramNames.value"
             :output-names="sa.outputNames.value"
             :param-labels="paramLabels"
             :nominal="sa.nominal.value"
             :nominal-source="sa.nominalSource.value"
+            :prediction-outputs="sa.predictionOutputs.value"
             :saved-results="sa.results.value"
             :selected-result-id="sa.selectedId.value"
             :percent-error="calib.percentError.value"
             :std-error="calib.stdError.value"
             :error-labels="calib.errorLabels.value"
+            :validation="calib.validation.value"
+            :validation-note="validationNote"
             :current-cost="currentCost"
             :baseline-cost="activeBaseline"
             :uq-params="uq.params.value"
             :uq-method="uq.method.value"
+            :uq-outside-bounds="uq.outsideBounds.value"
             :coverage="uq.coverage.value"
             :posterior-predictive="uq.posteriorPredictive.value"
             :emulator-metadata="emu.metadata.value"
@@ -3155,6 +3945,7 @@ watch(() => obs.obsData.value, scheduleRun)
             :best-fit-model-cost="bestFitScores?.model ?? null"
             :best-fit-emulator-cost="bestFitScores?.emulator ?? null"
             :calibration-used-emulator="lastCalibrationUsedEmulator"
+            :workflow-figures="workflowFigureList"
             @select-result="sa.selectResult"
             @remove-result="sa.removeResult"
             @clear-results="sa.clearResults"
@@ -3164,7 +3955,10 @@ watch(() => obs.obsData.value, scheduleRun)
           :status="sim.status.value"
           :message="sim.message.value"
           :last-run-ms="sim.lastRunMs.value"
+          :started-at="sim.startedAt.value"
+          :cancel-note="cancelNote"
           :notice="backendFallbackNotice"
+          @cancel="cancelSimulation"
         />
       </section>
 
@@ -3189,18 +3983,16 @@ watch(() => obs.obsData.value, scheduleRun)
         <div class="rhs-content">
         <FileImport
           ref="fileImport"
-          v-model:outputs-dir="outputsDir"
-          @load-outputs="loadOutputsFromDirectory"
+          v-model:working-dir="workingDir"
+          @load-working-dir="loadOutputsFromDirectory"
           :model-id="model.modelId.value"
           :phlynx-url="phlynxUrl"
           :current-params="loadedParamsRaw"
           :model-variables="model.variables.value"
           :model-name="model.name.value"
+          :needs-obs-data="needsObsData"
+          :needs-params="needsParams"
           :loaded-filename="loadedParamsFilename"
-          :current-data-items="obs.dataItems.value"
-          :current-prediction-items="obs.predictionItems.value"
-          :obs-protocol-info="obs.obsData.value?.protocol_info ?? null"
-          :experiment-count="obs.experimentCount.value"
           :loaded-obs-filename="loadedObsFilename"
           :can-export="model.hasModel.value"
           :generated-model-format="generatedModelFormat"
@@ -3220,6 +4012,7 @@ watch(() => obs.obsData.value, scheduleRun)
           :variables="model.variables.value"
           :active-keys="Object.keys(sliders.sliders)"
           @add-slider="onAddSlider"
+          @edit-symbols="variableMappingOpen = true"
         />
         </div>
       </aside>
@@ -3293,6 +4086,41 @@ watch(() => obs.obsData.value, scheduleRun)
           develop <code>libCUFLynx</code> itself — point it at the
           <code>circulatory_autogen</code> checkout the copy you are working on lives
           in, and runs will use that on their next launch.
+        </p>
+
+        <div class="settings-row" data-testid="module-libraries">
+          <span
+            class="settings-label"
+            title="Module libraries (e.g. circulatory-autogen-modules/modules) a calibration workflow's library modules are looked up in"
+          >
+            Module libraries
+          </span>
+          <span class="settings-input settings-list">
+            <span v-if="!moduleLibraryDirs.length" class="settings-hint">none</span>
+            <span v-for="dir in moduleLibraryDirs" :key="dir" class="settings-list-item">
+              <code class="ca-path" :title="dir">{{ dir }}</code>
+              <Button
+                icon="pi pi-times"
+                size="small"
+                text
+                :aria-label="`Remove ${dir}`"
+                :data-testid="`module-library-remove`"
+                @click="removeModuleLibrary(dir)"
+              />
+            </span>
+            <Button
+              icon="pi pi-plus"
+              size="small"
+              text
+              title="Add a module library"
+              data-testid="module-library-add"
+              @click="libraryBrowserOpen = true"
+            />
+          </span>
+        </div>
+        <p class="settings-hint">
+          Where a calibration workflow (the Workflow tab) finds the library modules its steps
+          and target name, in addition to the libraries its own file lists.
         </p>
 
         <hr class="settings-sep" />
@@ -3377,6 +4205,14 @@ watch(() => obs.obsData.value, scheduleRun)
         <p v-if="aadcNotice" class="settings-hint" data-testid="aadc-hint">
           {{ aadcNotice }}
         </p>
+        <p
+          v-for="note in withheldSolvers"
+          :key="note"
+          class="settings-hint withheld-solver-hint"
+          data-testid="withheld-solver-hint"
+        >
+          {{ note }}
+        </p>
         <label class="settings-row">
           <span class="settings-label" title="Solver wrapper, gated by the model format">Solver</span>
           <Select
@@ -3437,6 +4273,40 @@ watch(() => obs.obsData.value, scheduleRun)
           ⚠ {{ jsonFieldErrors[f.key] }}
         </p>
         </template>
+        <div class="settings-row">
+          <span
+            class="settings-label"
+            title="Take the solver, solver_info (e.g. MaximumStep) and dt from a libcuflynx user_inputs.yaml"
+          >From user_inputs</span>
+          <span class="settings-input">
+            <Button
+              label="Load user_inputs.yaml…"
+              size="small"
+              severity="secondary"
+              data-testid="user-inputs-load"
+              @click="userInputsInput?.click()"
+            />
+            <input
+              ref="userInputsInput"
+              type="file"
+              accept=".yaml,.yml"
+              hidden
+              data-testid="user-inputs-file"
+              @change="onUserInputsPicked"
+            />
+          </span>
+        </div>
+        <p v-if="userInputsMessage" class="settings-hint" data-testid="user-inputs-message">
+          {{ userInputsMessage }}
+        </p>
+        <p
+          v-for="(w, i) in userInputsWarnings"
+          :key="i"
+          class="settings-warn"
+          data-testid="user-inputs-warning"
+        >
+          ⚠ {{ w }}
+        </p>
         <p v-if="generatedModelFormat === 'casadi_python'" class="settings-hint">
           casadi_python enables automatic differentiation:
           <span data-testid="ad-status">{{
@@ -3556,17 +4426,28 @@ watch(() => obs.obsData.value, scheduleRun)
       title="Select the circulatory_autogen directory"
       @select="applyCaDir"
     />
+    <EditVariableMappingDialog
+      v-model:visible="variableMappingOpen"
+      :model-id="model.modelId.value"
+      :working-dir="workingDir"
+    />
     <FileBrowserDialog
-      v-model:visible="outputsSetupOpen"
+      v-model:visible="libraryBrowserOpen"
       mode="dir"
-      title="Where should outputs be saved?"
-      @select="(d) => (outputsDir = d)"
+      title="Select a module library directory"
+      @select="addModuleLibrary"
+    />
+    <FileBrowserDialog
+      v-model:visible="workingDirSetupOpen"
+      mode="dir"
+      title="Choose a working dir: the folder that keeps this study's inputs and outputs"
+      @select="(d) => (workingDir = d)"
     />
 
     <!-- Save / load slider values to a file (issue #106). -->
     <SaveParamsDialog
       v-model:visible="saveParamsOpen"
-      :output-dir="outputsDir"
+      :working-dir="workingDir"
       @save="onSaveParams"
     />
     <FileBrowserDialog
@@ -3574,7 +4455,7 @@ watch(() => obs.obsData.value, scheduleRun)
       mode="file"
       title="Load saved parameter values (.npy or .csv)"
       :start-path="savedParamsStart"
-      :start-dir="outputsDir"
+      :start-dir="workingDir"
       @select="onPickSavedParams"
     />
 
@@ -3754,6 +4635,25 @@ watch(() => obs.obsData.value, scheduleRun)
 .spacer {
   flex: 1;
 }
+.solver-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font: inherit;
+  font-size: 0.8rem;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--p-content-border-color, #555);
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+}
+.solver-chip:hover {
+  border-color: var(--p-primary-color, #4f8cff);
+}
+.solver-chip .py-label {
+  opacity: 0.7;
+}
 .python-bar {
   display: flex;
   align-items: center;
@@ -3823,6 +4723,10 @@ watch(() => obs.obsData.value, scheduleRun)
   font-size: 0.78rem;
   opacity: 0.65;
   margin: 0;
+}
+/* Its install instructions are one command per line. */
+.withheld-solver-hint {
+  white-space: pre-line;
 }
 .settings-sep {
   border: none;
@@ -3956,6 +4860,9 @@ watch(() => obs.obsData.value, scheduleRun)
 }
 .left-tabs {
   display: flex;
+  /* Six left tabs since the Workflow tab: in a narrow column they wrap onto a
+     second row rather than pushing the last one out of view. */
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--p-content-border-color, #333);
 }
 .left-tab {
@@ -4001,6 +4908,15 @@ watch(() => obs.obsData.value, scheduleRun)
 .tab-dot-on {
   background: #3fb950;
 }
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.settings-list-item {
+  display: flex;
+  align-items: center;
+}
 .left-pane {
   flex: 1;
   min-height: 0;
@@ -4011,6 +4927,15 @@ watch(() => obs.obsData.value, scheduleRun)
 .col-center {
   display: flex;
   flex-direction: column;
+}
+/* The Workflow view open: the plots' tabs wait at the bottom, their content hidden. */
+.col-center.wf-open > :not(.workflow-bar):not(.workflow-view):not(.center-tabs) {
+  display: none !important;
+}
+.col-center.wf-open > .center-tabs {
+  order: 99;
+  margin-top: auto;
+  border-top: 1px solid var(--p-content-border-color, #444);
 }
 .warn-banner {
   margin: 0.5rem;

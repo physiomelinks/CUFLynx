@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, devel_FA]
+    branches: [main]   # a PR branch's push runs once, as its pull_request run
   pull_request:
 
 # All workflows pin ubuntu-24.04: the PyPI libcellml wheel needs libxml2.so.2, which ubuntu-latest
@@ -89,7 +89,8 @@ jobs:
           # CUFLynx CI. It must never go back before the merge of circulatory_autogen#495
           # (the first CA carrying libcuflynx.parsers.MyokitParsers and .EasyMLParsers,
           # which this app delegates every .mmt and .model conversion to with no local
-          # fallback); v0.7.3 is well past it.
+          # fallback). This is master at the libcuflynx v0.8.0 tag: the release
+          # (circulatory_autogen#726) plus #728, the commit PyPI's 0.8.0 is built from.
           #
           # The `libcuflynx v<X.Y.Z>` marker is not decoration: it is the only
           # offline record of *which release* this SHA is, and
@@ -101,24 +102,28 @@ jobs:
           #
           # During release prep this is a commit on CA `devel`, which is what this
           # release is built against; its marker reads `v<X.Y.Z>+devel` (the release
-          # devel is ahead of). When libcuflynx is released, pin the release's merge
-          # commit with a plain `v<X.Y.Z>` marker, and move integration.yml's
-          # `@devel` installs back to `@master`.
-          ref: 1f7c238aeaa2aac159fca6c5b6c885c534764e79  # libcuflynx v0.7.3+devel
+          # devel is ahead of), and integration.yml installs libcuflynx from CA
+          # `@devel` too. When libcuflynx is released, pin the release's merge commit
+          # with a plain `v<X.Y.Z>` marker and drop those `@devel` installs, so the
+          # integration tier resolves the release from PyPI.
+          ref: e8fd03a8a3ad59dc8aa0cec45f5e0daf48e49cf1  # libcuflynx v0.8.0
           path: circulatory_autogen
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      # Install only the light deps needed by the unit tier; the heavy
-      # simulation stack (myokit/libcellml) is exercised by the integration
-      # marker, which is skipped here. pyyaml and jsonschema are for CA's parser
+      # Install only the light deps needed by the unit tier; myokit and the
+      # rest of the simulation stack are exercised by the integration marker,
+      # which is skipped here. libcellml and scipy are light (wheels): CA's workflow
+      # planner reads a CellML target's constants with libcellml and imports its
+      # solver wrappers (scipy), so the workflow editor and view tests need both.
+      # pyyaml and jsonschema are for CA's parser
       # module: without jsonschema it skips the schema checks the obs_data and
       # params_for_id tests expect.
       # matplotlib is for the extra-figure pipeline: without it the
       # sim-worker child degrades to "no extra figures" by design, which
       # would silently gut test_solver_plots_worker's drift guards.
       - name: Install unit-test deps
-        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml jsonschema python-multipart httpx matplotlib pytest pytest-cov
+        run: pip install fastapi "uvicorn[standard]" numpy pandas pyyaml jsonschema python-multipart httpx matplotlib pytest pytest-cov scipy "libcellml>=0.7.2"
       - name: Run unit tests
         run: pytest -m "not integration" -q
 
@@ -141,7 +146,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Install
         run: yarn install --frozen-lockfile
       - name: Unit tests
@@ -224,7 +229,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Install
         run: yarn install --frozen-lockfile
       # Only the two engines the config declares; `--with-deps` pulls the system

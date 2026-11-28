@@ -139,6 +139,30 @@ describe('useCalibration', () => {
     expect(c.calibratedModelUrl.value).toBe('/api/calibration/jcal/calibrated_model')
   })
 
+  it('keeps the validation against held-out data a finished run reports (CA #535)', async () => {
+    const validation = { items: [{ data_item_name: 'y_val', rmse: 0.5 }] }
+    startCalibration.mockResolvedValue({ job_id: 'jv' })
+    getCalibrationStatus.mockResolvedValue({
+      state: 'done', lines: [], next_offset: 0, best_params: {}, cost: 1,
+      validation, error: null,
+    })
+    const c = useCalibration()
+    await c.start('m1', { param_id_method: 'genetic_algorithm' })
+    expect(c.validation.value).toEqual(validation)
+    c.reset()
+    expect(c.validation.value).toBeNull()
+  })
+
+  it('has no validation when the run reports none', async () => {
+    startCalibration.mockResolvedValue({ job_id: 'jn' })
+    getCalibrationStatus.mockResolvedValue({
+      state: 'done', lines: [], next_offset: 0, best_params: {}, cost: 1, error: null,
+    })
+    const c = useCalibration()
+    await c.start('m1', { param_id_method: 'genetic_algorithm' })
+    expect(c.validation.value).toBeNull()
+  })
+
   it('has no download URL when the run saved no calibrated model', async () => {
     startCalibration.mockResolvedValue({ job_id: 'j0' })
     getCalibrationStatus.mockResolvedValue({
@@ -170,6 +194,37 @@ describe('useCalibration', () => {
     expect(c.lines.value).toEqual(['gen 0', 'best cost: 0.1'])
     expect(c.bestParams.value).toEqual({ 'a/x': 2 })
     vi.useRealTimers()
+  })
+
+  it("a stopped run's best-so-far errors arrive after it stops", async () => {
+    vi.useFakeTimers()
+    try {
+      startCalibration.mockResolvedValue({ job_id: 'j4' })
+      getCalibrationStatus
+        .mockResolvedValueOnce({ state: 'running', lines: ['gen 0'], next_offset: 1 })
+        .mockResolvedValueOnce({ state: 'cancelled', lines: ['writing'], next_offset: 2,
+          errors_pending: true, percent_error: null })
+        .mockResolvedValueOnce({ state: 'cancelled', lines: [], next_offset: 2,
+          errors_pending: false, percent_error: [12.5], std_error: [1.5],
+          error_labels: ['x_max'] })
+      const c = useCalibration({ intervalMs: 10 })
+      await c.start('m1', {})
+      await c.cancel()
+      expect(c.state.value).toBe('cancelled')
+      expect(c.percentError.value).toBe(null)
+      await vi.advanceTimersByTimeAsync(15)
+      expect(c.percentError.value).toBe(null) // still being written
+      await vi.advanceTimersByTimeAsync(15)
+      expect(c.percentError.value).toEqual([12.5])
+      expect(c.stdError.value).toEqual([1.5])
+      expect(c.errorLabels.value).toEqual(['x_max'])
+      expect(c.lines.value).toEqual(['gen 0', 'writing'])
+      expect(c.state.value).toBe('cancelled')
+      await vi.advanceTimersByTimeAsync(50)
+      expect(getCalibrationStatus).toHaveBeenCalledTimes(3) // and then it stops
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   // Regression: when calibration finishes, the best-fit values must reach the

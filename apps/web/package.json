@@ -1,7 +1,7 @@
 {
   "name": "cuflynx-web",
   "private": true,
-  "version": "0.7.1",
+  "version": "0.8.0",
   "type": "module",
   "packageManager": "yarn@1.22.22",
   "scripts": {
@@ -13,10 +13,12 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@physiomelinks/protocol-kit": "^0.6.0",
     "@primevue/themes": "^4.2.5",
     "axios": "^1.7.9",
     "chart.js": "^4.4.7",
     "katex": "^0.17.0",
+    "papaparse": "^5.5",
     "primeicons": "^7.0.0",
     "primevue": "^4.2.5",
     "vue": "^3.5.13",

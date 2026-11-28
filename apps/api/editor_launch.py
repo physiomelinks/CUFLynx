@@ -15,7 +15,7 @@ Three rules shape it:
   rather than ending the attempt.
 * **Never a shell.** The command is an argv list and the path is one element of
   it; nothing is interpolated into a string and ``shell=True`` never appears.
-  The path is ours to begin with (it is built from the outputs directory), and
+  The path is ours to begin with (it is built from the working dir), and
   that is exactly why it must not become the one place that discipline lapses.
 * **Detached, and never waited on.** An editor outlives the request that started
   it by definition. The child gets its own session/process group and closed

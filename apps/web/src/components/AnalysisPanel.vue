@@ -1,11 +1,19 @@
 <script setup>
+import { vFold } from '../lib/vFold'
+import ReductionResults from './ReductionResults.vue'
 import { ref, computed, watch } from 'vue'
 import { renderMath, renderOutputLabel } from '../lib/math'
 import { fmtSci } from '../lib/format'
 import { niceTicks, fmtTick } from '../lib/plot'
 import ScatterChart from './ScatterChart.vue'
+import { emulatorPredictionFlags } from '../lib/obsDataJson'
 
 const props = defineProps({
+  // The section of the workflow step selected (calibration, sensitivity, uq, emulator,
+  // reduction, identifiability): only it is open by default; none: every section is.
+  focus: { type: String, default: null },
+  // A parameter reduction's results (the Identifiability tab runs it), or null.
+  reduction: { type: Object, default: null },
   // Sensitivity: { S1: {outName: {param: val}}, ST: {...}, local: {...} }
   indices: { type: Object, default: null },
   paramNames: { type: Array, default: () => [] },
@@ -16,19 +24,37 @@ const props = defineProps({
   // paramNames) and a short description of where it came from.
   nominal: { type: Array, default: null },
   nominalSource: { type: String, default: null },
+  // The outputs that are prediction features (include_prediction_items) -- named by
+  // libcuflynx (Sobol's sobol_output_features.json, local SA's rows), never guessed
+  // from the label. Tagged in the heatmap.
+  predictionOutputs: { type: Array, default: () => [] },
   // Calibration: one error per observable, aligned with errorLabels.
   percentError: { type: Array, default: null },
   stdError: { type: Array, default: null },
   errorLabels: { type: Array, default: () => [] },
+  // The best fit against the obs_data's held-out data (CA #535): CA's
+  // validation_results.json, {items: [{data_item_name, operand, unit, data_type,
+  // n_points, rmse, nrmse, mean_abs_z, within_2std, t, data, std, model}]}.
+  // null when the obs_data held none, and then the section is not drawn at all.
+  validation: { type: Object, default: null },
+  // One line shown instead of the section when the study has held-out data but
+  // the installed libcuflynx cannot validate against it (no param_id.validation).
+  // CUFLynx scores nothing itself, so there is then no validation to show.
+  validationNote: { type: String, default: '' },
   // Issue #159: the cost and per-observable errors of whatever the sliders
   // currently say, and a baseline to compare them against (the calibration best
   // fit, or a pinned parameter set). Both {cost, items:[{label, percent_error,
   // std_error, cost}]}; null when unknown, which is not the same as zero.
   currentCost: { type: Object, default: null },
   baselineCost: { type: Object, default: null },
-  // UQ: per-parameter posteriors [{qname, mean, std, q05, q50, q95, bins, counts}].
+  // UQ: per-parameter posteriors [{qname, mean, std, q05, q50, q95, bins, counts}]. A
+  // Laplace marginal the data do not pin down has std null and says why in
+  // `not_identifiable`; it is shown as that, never as a std of 0.
   uqParams: { type: Array, default: () => [] },
   uqMethod: { type: String, default: null },
+  // A Laplace step's draws outside the params_for_id bounds, dropped from its
+  // stored distribution: {count, of} (of may be null), or null when not counted.
+  uqOutsideBounds: { type: Object, default: null },
   // How well the posterior reproduces the data it was fitted to. null means the
   // run was not scored -- an older engine, or the check turned off -- which is
   // not the same as scoring badly, so the panel says so rather than showing 0.
@@ -55,9 +81,110 @@ const props = defineProps({
   // toggle starts on, so what is first on screen is what the calibration
   // actually minimised and its reported cost reconciles rather than puzzles.
   calibrationUsedEmulator: { type: Boolean, default: false },
+  // The open workflow's figure steps that have drawn (lib/workflowFigures.workflowFigures):
+  // [{step, function, files: [{name, url, image}]}]. None: the section is not shown.
+  workflowFigures: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(['select-result', 'remove-result', 'clear-results'])
+const emit = defineEmits(['adopt-reduction', 'select-result', 'remove-result', 'clear-results'])
+
+// ---- Validation ------------------------------------------------------------
+// Read from CA's validation_results.json; nothing is recomputed here. The scores
+// are CA's, and the chart plots the very points they were taken at.
+const validationItems = computed(() =>
+  Array.isArray(props.validation?.items) ? props.validation.items : [],
+)
+const hasValidation = computed(() => validationItems.value.length > 0)
+
+/** A fraction as a percentage, or a dash when there was no std to judge by. */
+function fmtFraction(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—'
+  return `${Math.round(Number(value) * 100)}%`
+}
+
+/**
+ * One chart per item: the held-out data with its ±std bars, and the model at the
+ * same times. The y range covers the bars as well as the points, so a bar is
+ * never clipped into looking tighter than it is.
+ */
+/** "x (max)" for a scalar feature (an item with an operation), else its name. */
+function validationName(item) {
+  return item.operation ? `${item.data_item_name} (${item.operation})` : item.data_item_name
+}
+
+/**
+ * A scalar item: one number against one number -- a prediction feature (an item
+ * with an operation, which libcuflynx scores as operation(model operands) at the end
+ * of the run) or a plain constant. One chart per scalar would be a page of single
+ * dots, so they share one parity chart instead; series keep a chart each.
+ */
+function isScalarItem(item) {
+  return !!item.operation || item.data_type !== 'series'
+}
+
+/** One stdev per point, whether the item gave one for all or one each. */
+function stdAt(item, i) {
+  const std = Array.isArray(item.std) ? item.std.map(Number) : null
+  return std ? (std.length === 1 ? std[0] : std[i]) : null
+}
+
+/**
+ * The scalar items in one parity chart: x the model, y the held-out data ± std, and
+ * the y = x line. A point's bar crosses the line exactly when the model is within
+ * one std of the data, so agreement reads straight off it.
+ */
+const validationFeaturePlot = computed(() => {
+  const items = validationItems.value.filter(isScalarItem)
+  if (!items.length) return null
+  const points = items.map((item) => {
+    const data = Number(item.data?.[0])
+    const model = Number(item.model?.[0])
+    const err = stdAt(item, 0)
+    return {
+      x: model,
+      y: data,
+      err,
+      title: `${validationName(item)}: data ${data}${err != null ? ` ± ${err}` : ''}, model ${model}${item.unit ? ` ${item.unit}` : ''}`,
+    }
+  })
+  const vals = []
+  for (const p of points) {
+    const e = Number.isFinite(p.err) ? p.err : 0
+    vals.push(p.x, p.y - e, p.y + e)
+  }
+  const finite = vals.filter(Number.isFinite)
+  const domain = finite.length ? [Math.min(...finite), Math.max(...finite)] : [0, 1]
+  return { points, domain }
+})
+
+const validationPlots = computed(() =>
+  validationItems.value.filter((item) => !isScalarItem(item)).map((item) => {
+    const t = (item.t ?? []).map(Number)
+    const data = (item.data ?? []).map(Number)
+    const model = (item.model ?? []).map(Number)
+    const std = Array.isArray(item.std) ? item.std.map(Number) : null
+    const err = (i) => (std ? (std.length === 1 ? std[0] : std[i]) : null)
+    const ys = [...model]
+    data.forEach((d, i) => {
+      const e = Number.isFinite(err(i)) ? err(i) : 0
+      ys.push(d - e, d + e)
+    })
+    const finite = ys.filter(Number.isFinite)
+    return {
+      name: validationName(item),
+      unit: item.unit,
+      xDomain: t.length ? [Math.min(...t), Math.max(...t)] : [0, 1],
+      yDomain: finite.length ? [Math.min(...finite), Math.max(...finite)] : [0, 1],
+      points: data.map((d, i) => ({
+        x: t[i],
+        y: d,
+        err: err(i),
+        title: `t = ${t[i]}: data ${d}${std ? ` ± ${err(i)}` : ''}, model ${model[i]}`,
+      })),
+      line: model.map((m, i) => ({ x: t[i], y: m })),
+    }
+  }),
+)
 
 // ---- Emulator error --------------------------------------------------------
 // Everything here is read from CA's emulator_metadata.json / emulator_validation.npz;
@@ -68,8 +195,10 @@ const hasEmulator = computed(() => !!props.emulatorMetadata)
 const emulatorRows = computed(() => {
   const meta = props.emulatorMetadata
   if (!meta) return []
+  const prediction = emulatorPredictionFlags(meta)
   return (meta.feature_labels ?? []).map((label, i) => ({
     label,
+    prediction: prediction[i],
     r2: meta.feature_r2?.[i] ?? null,
     rmse: meta.feature_rmse?.[i] ?? null,
     mae: meta.feature_mae?.[i] ?? null,
@@ -192,6 +321,10 @@ const residualBasis = computed(
 )
 
 // ---- Sensitivity heatmap ---------------------------------------------------
+const predictionOutputSet = computed(() => new Set(props.predictionOutputs ?? []))
+function isPredictionOutput(out) {
+  return predictionOutputSet.value.has(out)
+}
 // Sobol runs carry S1/ST; a local (finite-difference) run carries a single
 // 'local' matrix of relative sensitivities. Offer whichever kinds are present.
 const TYPE_LABELS = {
@@ -529,8 +662,19 @@ function densityGeometry(p) {
 }
 
 const uqPlots = computed(() =>
-  props.uqParams.map((p) => ({ ...p, geom: densityGeometry(p) })),
+  props.uqParams.map((p) => ({
+    ...p,
+    geom: p.not_identifiable || p.std == null ? null : densityGeometry(p),
+  })),
 )
+
+const uqOutsideBoundsText = computed(() => {
+  const ob = props.uqOutsideBounds
+  if (!ob || typeof ob.count !== 'number') return ''
+  const of = typeof ob.of === 'number' ? ` of ${ob.of}` : ''
+  return `${ob.count}${of} draws fell outside the params_for_id bounds and were dropped`
+    + ' from the stored distribution.'
+})
 
 const uqMethodLabel = computed(() =>
   props.uqMethod === 'laplace' ? 'Laplace' : props.uqMethod === 'mcmc' ? 'MCMC' : '',
@@ -600,12 +744,132 @@ const predictiveBandLeft = computed(
   () => `${((PREDICTIVE_LIMIT - 1) / (2 * PREDICTIVE_LIMIT)) * 100}%`,
 )
 const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100}%`)
+
+/** Whether a section starts open: all of them, or only the selected step's. */
+function sectionOpen(key) {
+  return !props.focus || props.focus === key
+}
 </script>
 
 <template>
   <div class="analysis-panel" data-testid="analysis-panel">
     <!-- Sensitivity --------------------------------------------------------->
-    <section class="analysis-section">
+    <section class="analysis-section" v-fold="sectionOpen('emulator')">
+      <h2>
+        Emulator
+        <span v-if="emulatorInUse" class="uq-method"> · in use for analyses</span>
+      </h2>
+      <p v-if="!hasEmulator" class="empty-hint">
+        Train an emulator in the Emulator tab to see how well it reproduces the
+        model.
+      </p>
+      <template v-else>
+        <table class="emu-error-table" data-testid="emulator-error-table">
+          <thead>
+            <tr>
+              <th>Feature</th><th>R²</th><th>nRMSE</th><th>RMSE</th>
+              <th>MAE</th><th>Bias</th><th>Max |err|</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, i) in emulatorRows" :key="row.label">
+              <td class="emu-error-label">
+                <span v-html="renderMath(row.label)" />
+                <span
+                  v-if="row.prediction"
+                  class="pred-tag"
+                  data-testid="emulator-prediction-tag"
+                >prediction</span>
+              </td>
+              <td>{{ fmtStat(row.r2) }}</td>
+              <td>{{ fmtStat(row.nrmse) }}</td>
+              <td>{{ fmtStat(row.rmse, 3) }}</td>
+              <td>{{ fmtStat(row.mae, 3) }}</td>
+              <td>{{ fmtStat(row.bias, 3) }}</td>
+              <td>{{ fmtStat(row.maxAbs, 3) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="emu-error-note">
+          Measured on held-out points the emulator was never fitted to. Bias is
+          signed (prediction − truth), so a systematically high emulator is
+          distinguishable from a merely noisy one; nRMSE is relative to each
+          feature's own spread, so features in different units can be compared.
+        </p>
+
+        <p v-if="!emulatorErrorPoints" class="empty-hint" data-testid="emu-no-points">
+          This emulator was trained before circulatory_autogen saved its held-out
+          points, so only the summary above is available. Retrain it to see where
+          the error falls.
+        </p>
+        <template v-else>
+          <label class="field emu-feature-pick">
+            <span>Feature</span>
+            <!-- A native select: this panel mounts without the PrimeVue plugin
+                 in tests, and one dropdown is not worth changing that. -->
+            <select
+              v-model="emulatorFeature"
+              class="emu-feature-select"
+              data-testid="emu-feature-select"
+            >
+              <option v-for="o in emulatorFeatureOptions" :key="o.value" :value="o.value">
+                {{ o.label }}
+              </option>
+            </select>
+          </label>
+
+          <section v-fold class="error-chart">
+            <h3>Predicted vs simulated</h3>
+            <ScatterChart
+              data-testid="emu-parity"
+              :points="parityPoints?.points ?? []"
+              :x-domain="[parityPoints?.lo ?? 0, parityPoints?.hi ?? 1]"
+              :y-domain="[parityPoints?.lo ?? 0, parityPoints?.hi ?? 1]"
+              x-label="simulated"
+              y-label="emulated"
+              guide="diagonal"
+              square
+            />
+            <small class="emu-error-note">
+              Points on the diagonal are exact. Both axes share one range — a
+              parity plot with independent axes makes any emulator look perfect.
+            </small>
+          </section>
+
+          <section v-fold
+            v-for="param in residualByParam"
+            :key="param.label"
+            class="error-chart"
+          >
+            <h3>Normalised residual vs {{ param.label }}</h3>
+            <ScatterChart
+              data-testid="emu-residual"
+              :points="param.points"
+              :x-domain="[param.lo, param.hi]"
+              :y-domain="[-param.worst, param.worst]"
+              :x-label="param.label"
+              :y-label="residualBasis.axis"
+              guide="zero"
+            />
+            <small class="emu-error-note">
+              Structure here — a trend, or a cluster far from the line — means the
+              emulator is wrong in a particular part of the parameter space, not
+              uniformly. The axis is {{ residualBasis.note }}.
+            </small>
+          </section>
+        </template>
+      </template>
+    </section>
+
+    <section class="analysis-section" v-fold="sectionOpen('reduction')" data-testid="reduction-section">
+      <h2>Parameter reduction</h2>
+      <p v-if="!reduction" class="empty-hint">
+        Run a parameter reduction in the Identifiability tab to see the parameters it keeps.
+      </p>
+      <ReductionResults v-else :reduction="reduction" @adopt="(dir) => emit('adopt-reduction', dir)" />
+    </section>
+
+    <section class="analysis-section" v-fold="sectionOpen('sensitivity')">
       <h2>Sensitivity</h2>
       <p v-if="!hasSensitivity" class="empty-hint">
         Run a sensitivity analysis to see the heatmap.
@@ -684,9 +948,15 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
                   v-for="out in outputNames"
                   :key="out"
                   class="col-head"
-                  :title="out"
-                  v-html="renderOutputLabel(out)"
-                />
+                  :title="isPredictionOutput(out) ? `${out} (prediction item)` : out"
+                >
+                  <span v-html="renderOutputLabel(out)" />
+                  <span
+                    v-if="isPredictionOutput(out)"
+                    class="pred-tag"
+                    data-testid="sa-prediction-tag"
+                  >prediction</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -716,7 +986,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
     </section>
 
     <!-- Calibration --------------------------------------------------------->
-    <section class="analysis-section">
+    <section class="analysis-section" v-fold="sectionOpen('calibration')">
       <h2>Calibration</h2>
 
       <!--
@@ -835,7 +1105,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         one of which nothing on screen said was superseded.
       -->
       <template v-if="bothSourcesAvailable && compareEmulator">
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Percentage error — forward model vs emulator</h3>
           <div class="chart-legend" data-testid="emulator-compare-legend">
             <span class="legend-item">
@@ -867,7 +1137,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
             </div>
           </div>
         </section>
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Error in standard deviations — forward model vs emulator</h3>
           <div class="bar-list" data-testid="emulator-std-chart">
             <div v-for="(b, i) in modelStdBars" :key="`em-s${i}`" class="bar-row">
@@ -892,7 +1162,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
       </template>
 
       <template v-else-if="comparable && compare">
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Percentage error — current vs {{ baselineCost?.label ?? 'baseline' }}</h3>
           <div class="chart-legend" data-testid="compare-legend">
             <span class="legend-item">
@@ -924,7 +1194,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
             </div>
           </div>
         </section>
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Error in standard deviations — current vs {{ baselineCost?.label ?? 'baseline' }}</h3>
           <div class="chart-legend" data-testid="compare-legend">
             <span class="legend-item">
@@ -963,7 +1233,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         series, so leaving these below would plot the same numbers twice.
       -->
       <template v-else-if="hasCalibration">
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Percentage error per observable</h3>
           <div class="bar-list" data-testid="percent-error-chart">
             <div v-for="(b, i) in percentBars" :key="i" class="bar-row">
@@ -979,7 +1249,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
             </div>
           </div>
         </section>
-        <section class="error-chart">
+        <section v-fold class="error-chart">
           <h3>Error in standard deviations per observable</h3>
           <div class="bar-list" data-testid="std-error-chart">
             <div v-for="(b, i) in stdBars" :key="i" class="bar-row">
@@ -998,118 +1268,117 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
       </template>
     </section>
 
-    <!-- Emulator ------------------------------------------------------------>
-    <section class="analysis-section">
-      <h2>
-        Emulator
-        <span v-if="emulatorInUse" class="uq-method"> · in use for analyses</span>
-      </h2>
-      <p v-if="!hasEmulator" class="empty-hint">
-        Train an emulator in the Emulator tab to see how well it reproduces the
-        model.
-      </p>
-      <template v-else>
-        <table class="emu-error-table" data-testid="emulator-error-table">
-          <thead>
-            <tr>
-              <th>Feature</th><th>R²</th><th>nRMSE</th><th>RMSE</th>
-              <th>MAE</th><th>Bias</th><th>Max |err|</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, i) in emulatorRows" :key="row.label">
-              <td class="emu-error-label" v-html="renderMath(row.label)" />
-              <td>{{ fmtStat(row.r2) }}</td>
-              <td>{{ fmtStat(row.nrmse) }}</td>
-              <td>{{ fmtStat(row.rmse, 3) }}</td>
-              <td>{{ fmtStat(row.mae, 3) }}</td>
-              <td>{{ fmtStat(row.bias, 3) }}</td>
-              <td>{{ fmtStat(row.maxAbs, 3) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="emu-error-note">
-          Measured on held-out points the emulator was never fitted to. Bias is
-          signed (prediction − truth), so a systematically high emulator is
-          distinguishable from a merely noisy one; nRMSE is relative to each
-          feature's own spread, so features in different units can be compared.
-        </p>
-
-        <p v-if="!emulatorErrorPoints" class="empty-hint" data-testid="emu-no-points">
-          This emulator was trained before circulatory_autogen saved its held-out
-          points, so only the summary above is available. Retrain it to see where
-          the error falls.
-        </p>
-        <template v-else>
-          <label class="field emu-feature-pick">
-            <span>Feature</span>
-            <!-- A native select: this panel mounts without the PrimeVue plugin
-                 in tests, and one dropdown is not worth changing that. -->
-            <select
-              v-model="emulatorFeature"
-              class="emu-feature-select"
-              data-testid="emu-feature-select"
-            >
-              <option v-for="o in emulatorFeatureOptions" :key="o.value" :value="o.value">
-                {{ o.label }}
-              </option>
-            </select>
-          </label>
-
-          <section class="error-chart">
-            <h3>Predicted vs simulated</h3>
-            <ScatterChart
-              data-testid="emu-parity"
-              :points="parityPoints?.points ?? []"
-              :x-domain="[parityPoints?.lo ?? 0, parityPoints?.hi ?? 1]"
-              :y-domain="[parityPoints?.lo ?? 0, parityPoints?.hi ?? 1]"
-              x-label="simulated"
-              y-label="emulated"
-              guide="diagonal"
-              square
-            />
-            <small class="emu-error-note">
-              Points on the diagonal are exact. Both axes share one range — a
-              parity plot with independent axes makes any emulator look perfect.
-            </small>
-          </section>
-
-          <section
-            v-for="param in residualByParam"
-            :key="param.label"
-            class="error-chart"
+    <!-- Validation ----------------------------------------------------------
+         Only when the obs_data carries held-out data (CA #535): an empty
+         section here would read as "validated, nothing to say". -->
+    <p
+      v-if="!hasValidation && validationNote"
+      class="emu-error-note"
+      data-testid="validation-needs-newer"
+    >{{ validationNote }}</p>
+    <section v-if="hasValidation" class="analysis-section" v-fold="sectionOpen('calibration')" data-testid="validation-section">
+      <h2>Validation</h2>
+      <table class="emu-error-table" data-testid="validation-table">
+        <thead>
+          <tr>
+            <th>Item</th><th>Operand</th><th>Unit</th><th>Points</th>
+            <th>RMSE</th><th>nRMSE</th><th>Mean |z|</th><th>Within 2σ</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="item in validationItems"
+            :key="item.data_item_name"
+            data-testid="validation-row"
           >
-            <h3>Normalised residual vs {{ param.label }}</h3>
-            <ScatterChart
-              data-testid="emu-residual"
-              :points="param.points"
-              :x-domain="[param.lo, param.hi]"
-              :y-domain="[-param.worst, param.worst]"
-              :x-label="param.label"
-              :y-label="residualBasis.axis"
-              guide="zero"
-            />
-            <small class="emu-error-note">
-              Structure here — a trend, or a cluster far from the line — means the
-              emulator is wrong in a particular part of the parameter space, not
-              uniformly. The axis is {{ residualBasis.note }}.
-            </small>
-          </section>
-        </template>
-      </template>
+            <td class="emu-error-label">{{ validationName(item) }}</td>
+            <td>{{ item.operand }}</td>
+            <td>{{ item.unit }}</td>
+            <td>{{ item.n_points }}</td>
+            <td>{{ fmtStat(item.rmse, 3) }}</td>
+            <td>{{ fmtStat(item.nrmse) }}</td>
+            <td>{{ fmtStat(item.mean_abs_z, 3) }}</td>
+            <td>{{ fmtFraction(item.within_2std) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="emu-error-note">
+        The calibrated model's prediction of data it was never fitted to. A series
+        is compared at its own sample times, a constant at the end of its
+        experiment, and an item with an operation as that operation of the
+        model's run (e.g. its max). Mean |z| and within 2σ need a std; nRMSE is relative to the
+        data's range, so items in different units can be compared.
+      </p>
+
+      <section v-fold
+        v-if="validationFeaturePlot"
+        class="error-chart"
+        data-testid="validation-features-chart"
+      >
+        <h3>Scalar items</h3>
+        <div class="chart-legend">
+          <span class="legend-item">
+            <span class="legend-swatch validation-data" /> held-out data ± std, at the model's value
+          </span>
+          <span class="legend-item">model = data</span>
+        </div>
+        <ScatterChart
+          :points="validationFeaturePlot.points"
+          :x-domain="validationFeaturePlot.domain"
+          :y-domain="validationFeaturePlot.domain"
+          guide="diagonal"
+          square
+          x-label="model"
+          y-label="held-out data"
+        />
+      </section>
+
+      <section v-fold
+        v-for="plot in validationPlots"
+        :key="plot.name"
+        class="error-chart"
+        data-testid="validation-chart"
+      >
+        <h3>{{ plot.name }}</h3>
+        <div class="chart-legend">
+          <span class="legend-item">
+            <span class="legend-swatch validation-model" /> model
+          </span>
+          <span class="legend-item">
+            <span class="legend-swatch validation-data" /> held-out data ± std
+          </span>
+        </div>
+        <ScatterChart
+          :points="plot.points"
+          :line="plot.line"
+          :x-domain="plot.xDomain"
+          :y-domain="plot.yDomain"
+          x-label="time"
+          :y-label="plot.unit"
+        />
+      </section>
     </section>
 
+    <!-- Emulator ------------------------------------------------------------>
+
     <!-- UQ ------------------------------------------------------------------>
-    <section class="analysis-section">
+    <section class="analysis-section" v-fold="sectionOpen('uq')">
       <h2>UQ<span v-if="uqMethodLabel" class="uq-method"> · {{ uqMethodLabel }}</span></h2>
       <p v-if="!hasUQ" class="empty-hint">
         Run a UQ analysis to see parameter posteriors.
       </p>
       <div v-else class="uq-list">
+        <p v-if="uqOutsideBoundsText" class="empty-hint" data-testid="uq-outside-bounds">
+          {{ uqOutsideBoundsText }}
+        </p>
         <div v-for="(p, i) in uqPlots" :key="i" class="uq-row" data-testid="uq-row">
           <div class="uq-head">
             <span class="uq-label" v-html="renderMath(paramLabels[p.qname] ?? p.qname)" />
-            <span class="uq-stats">
+            <span v-if="!p.geom" class="uq-stats" data-testid="uq-not-identifiable">
+              {{ p.mean.toPrecision(3) }}:
+              {{ p.not_identifiable || 'not identifiable (no finite std)' }}
+            </span>
+            <span v-else class="uq-stats">
               {{ p.mean.toPrecision(3) }} ± {{ p.std.toPrecision(2) }}
               <span class="uq-ci">
                 90% CI [{{ p.q05.toPrecision(3) }}, {{ p.q95.toPrecision(3) }}]
@@ -1117,6 +1386,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
             </span>
           </div>
           <svg
+            v-if="p.geom"
             class="uq-plot"
             viewBox="0 0 260 60"
             preserveAspectRatio="none"
@@ -1135,7 +1405,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
               y2="60"
             />
           </svg>
-          <div class="uq-axis" data-testid="uq-axis">
+          <div v-if="p.geom" class="uq-axis" data-testid="uq-axis">
             <span v-for="t in p.geom.ticks" :key="'l' + t.at" :style="{ left: t.pct + '%' }">
               {{ t.text }}
             </span>
@@ -1145,7 +1415,7 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
 
       <!-- Does the posterior reproduce the data it was fitted to? ----------->
       <template v-if="hasUQ">
-        <section v-if="coverageRows.length" class="error-chart" data-testid="coverage">
+        <section v-fold v-if="coverageRows.length" class="error-chart" data-testid="coverage">
           <h3>
             Coverage
             <span v-if="coverageObservables" class="uq-method">
@@ -1184,7 +1454,8 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
           </table>
         </section>
 
-        <section v-if="hasPredictive" class="error-chart" data-testid="posterior-predictive">
+
+        <section v-fold v-if="hasPredictive" class="error-chart" data-testid="posterior-predictive">
           <h3>Posterior predictive against the data</h3>
           <p class="empty-hint">
             Each bar is the model's 95% interval over posterior draws, in units of
@@ -1224,10 +1495,52 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
         </p>
       </template>
     </section>
+
+    <section v-if="workflowFigures.length" class="analysis-section" v-fold="sectionOpen('figures')"
+             data-testid="figures-section">
+      <h2>Figures</h2>
+      <p class="empty-hint">Drawn by the workflow's figure steps from the results of other steps.</p>
+      <section v-for="fig in workflowFigures" :key="fig.step" v-fold class="error-chart"
+               :data-testid="`figures-${fig.step}`">
+        <h3>{{ fig.step }} <span class="empty-hint">· {{ fig.function }}</span></h3>
+        <div class="workflow-figures">
+          <a v-for="f in fig.files" :key="f.url" :href="f.url" target="_blank" rel="noopener" :title="f.name">
+            <img v-if="f.image" :src="f.url" :alt="`${fig.step}: ${f.name}`" />
+            <code v-else>{{ f.name }}</code>
+          </a>
+        </div>
+      </section>
+    </section>
   </div>
 </template>
 
 <style scoped>
+.workflow-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+.workflow-figures img {
+  max-width: 100%;
+  width: 420px;
+  border: 1px solid var(--p-content-border-color, #ccc);
+}
+/* v-fold: a heading folds its section; a folded section shows its heading alone */
+.fold-head {
+  cursor: pointer;
+  user-select: none;
+}
+.fold-head::before {
+  content: '▾ ';
+  opacity: 0.6;
+}
+[data-folded] > .fold-head::before {
+  content: '▸ ';
+}
+[data-folded] > :not(.fold-head) {
+  display: none !important;
+}
 .emu-error-table {
   width: 100%;
   border-collapse: collapse;
@@ -1248,6 +1561,23 @@ const predictiveBandWidth = computed(() => `${(2 / (2 * PREDICTIVE_LIMIT)) * 100
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.pred-tag {
+  display: inline-block;
+  margin-left: 0.25rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  font-size: 0.6rem;
+  font-weight: normal;
+  background: var(--p-orange-500, #e08a2c);
+  color: #111;
+  vertical-align: middle;
+}
+.legend-swatch.validation-model {
+  background: var(--p-orange-500, #e08a2c);
+}
+.legend-swatch.validation-data {
+  background: var(--p-primary-color, #5b9bd5);
 }
 .emu-error-note {
   font-size: 0.7rem;

@@ -3,7 +3,9 @@ import {
   startSensitivity,
   getSensitivityStatus,
   cancelSensitivity,
+  getSobolProgress,
 } from '../lib/api'
+import { useSobolFollow } from '../lib/sobolProgress'
 
 /**
  * Drives a sensitivity-analysis job: start, poll status, expose the streamed
@@ -23,6 +25,9 @@ export function useSensitivity(options = {}) {
   const state = ref('idle') // idle | running | done | error | cancelled
   const lines = ref([])
   const error = ref('')
+  // CA's progress.json of the running (or last) Sobol run, and its design and convergence.
+  const progress = ref(null)
+  const sobol = useSobolFollow((id) => getSobolProgress(id), options)
 
   // Accumulated history of completed runs + which one is shown.
   const results = ref([]) // [{ id, label, at, method, settings, indices, paramNames, outputNames }]
@@ -45,6 +50,8 @@ export function useSensitivity(options = {}) {
   // a short description of where it came from (current / best fit / bounds).
   const nominal = computed(() => selected.value?.nominal ?? null)
   const nominalSource = computed(() => selected.value?.nominalSource ?? null)
+  // The outputs that are prediction features (include_prediction_items), for a tag.
+  const predictionOutputs = computed(() => selected.value?.predictionOutputs ?? [])
 
   // Human-readable label summarising what produced a run, so saved runs are
   // distinguishable in the comparison selector.
@@ -59,10 +66,14 @@ export function useSensitivity(options = {}) {
     if (s.method === 'local') {
       const parts = ['Local', (resolved || s.gradient_method || 'FD'), (s.nominal ?? 'current')]
       if (s.run_calibration_first) parts.push('calib-first')
+      if (s.include_prediction_items) parts.push('+predictions')
       return `#${id} ${parts.join(' · ')}`
     }
     if (s.method === 'sobol') {
-      return `#${id} Sobol · ${s.sample_type ?? 'saltelli'} · n${s.num_samples ?? '?'}`
+      const label = `#${id} Sobol · ${s.sample_type ?? 'saltelli'} · n${s.num_samples ?? '?'}`
+      // Its outputs include the prediction features, so it is not the same study
+      // as a run without them -- say so in the comparison selector.
+      return s.include_prediction_items ? `${label} · +predictions` : label
     }
     return `#${id} ${s.method ?? 'run'}`
   }
@@ -76,6 +87,8 @@ export function useSensitivity(options = {}) {
     state.value = 'idle'
     lines.value = []
     error.value = ''
+    progress.value = null
+    sobol.reset()
   }
 
   function clearResults() {
@@ -111,6 +124,7 @@ export function useSensitivity(options = {}) {
         outputNames: s.output_names ?? [],
         nominal: s.nominal ?? null,
         nominalSource: s.nominal_source ?? null,
+        predictionOutputs: s.prediction_outputs ?? [],
       },
     ]
     selectedId.value = id
@@ -147,6 +161,7 @@ export function useSensitivity(options = {}) {
         outputNames: payload.output_names ?? [],
         nominal: payload.nominal ?? null,
         nominalSource: payload.nominal_source ?? null,
+        predictionOutputs: payload.prediction_outputs ?? [],
       },
     ]
     selectedId.value = id
@@ -160,6 +175,7 @@ export function useSensitivity(options = {}) {
     try {
       const { job_id } = await startSensitivity(modelId, settings, currentParams)
       jobId = job_id
+      sobol.follow(jobId)
       await poll()
     } catch (e) {
       state.value = 'error'
@@ -176,9 +192,11 @@ export function useSensitivity(options = {}) {
         offset = s.next_offset
       }
       state.value = s.state
+      progress.value = s.progress ?? null
       if (s.state === 'running') {
         timer = setTimeout(poll, intervalMs)
       } else {
+        sobol.finish(jobId)
         // Save (rather than overwrite) a successful run so it can be compared.
         if (s.state === 'done' && s.indices) saveResult(s)
         error.value = s.error || ''
@@ -195,6 +213,9 @@ export function useSensitivity(options = {}) {
     if (jobId) {
       try {
         await cancelSensitivity(jobId)
+        sobol.finish(jobId)
+        // the last word on how far it got: its progress now reads stopped
+        progress.value = (await getSensitivityStatus(jobId, offset)).progress ?? null
       } catch {
         /* best effort */
       }
@@ -212,8 +233,11 @@ export function useSensitivity(options = {}) {
     outputNames,
     nominal,
     nominalSource,
+    predictionOutputs,
     error,
     running,
+    progress,
+    sobolProgress: sobol.data,
     results,
     selectedId,
     selectResult,

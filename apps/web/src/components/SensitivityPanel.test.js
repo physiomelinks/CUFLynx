@@ -38,6 +38,44 @@ const GRAD_CELLML = [
     requires_all_differentiable: false },
 ]
 
+describe("SensitivityPanel: CA's copies of the panel's own settings", () => {
+  // CA's sensitivity schema lists gradient_method and fd_rel_step (for local runs). Sent
+  // with the panel's settings, CA's default replaced the user's choice: a local run asked
+  // for FD went out as "auto".
+  const CA_OPTIONS = [
+    { name: 'gradient_method', type: 'enum', default: 'auto', choices: ['auto', 'AD', 'FSA', 'FD'] },
+    { name: 'fd_rel_step', type: 'float', default: 0.001 },
+    { name: 'num_samples', type: 'int', default: 32 },
+  ]
+
+  it("a local run sends the gradient source and step chosen, not CA's defaults", async () => {
+    const wrapper = mount(SensitivityPanel, {
+      props: { canRun: true, adAvailable: true,
+        defaults: { method: 'local', gradient_method: 'FD', rel_step: 0.01, gradient_methods: GRAD_CASADI, options: CA_OPTIONS } },
+      global: { stubs },
+    })
+    await wrapper.find('[data-testid="run-sensitivity"]').trigger('click')
+    const payload = wrapper.emitted('run')[0][0]
+    expect(payload.gradient_method).toBe('FD')
+    expect(payload.rel_step).toBe(0.01)
+    expect(payload).not.toHaveProperty('fd_rel_step')
+  })
+
+  it("the Sobol form does not show CA's local options, and a `methods` marker is followed", () => {
+    const wrapper = mount(SensitivityPanel, {
+      props: { defaults: { method: 'sobol', options: [...CA_OPTIONS,
+        { name: 'jacobian_points', type: 'int', default: 8, methods: ['sobol'] },
+        { name: 'a_local_option', type: 'int', default: 1, methods: ['local'] }] } },
+      global: { stubs },
+    })
+    expect(wrapper.find('[data-testid="sa-opt-gradient_method"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sa-opt-fd_rel_step"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sa-opt-num_samples"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="sa-opt-jacobian_points"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="sa-opt-a_local_option"]').exists()).toBe(false)
+  })
+})
+
 describe('SensitivityPanel AD gating', () => {
   it('disables the AD gradient source when AD is unavailable', () => {
     const wrapper = mount(SensitivityPanel, {
@@ -305,5 +343,108 @@ describe('tour anchors', () => {
       global: { stubs },
     })
     expect(wrapper.find('[data-testid="sa-settings"]').exists()).toBe(true)
+  })
+})
+
+describe('SensitivityPanel "Include prediction items"', () => {
+  // A real checkbox, so disabled / checked / change are observable.
+  const CheckboxStub = {
+    props: ['modelValue', 'disabled'],
+    emits: ['update:modelValue'],
+    template:
+      '<input type="checkbox" :disabled="disabled" :checked="modelValue" v-bind="$attrs" @change="$emit(\'update:modelValue\', !modelValue)" />',
+  }
+  const boxStubs = { ...stubs, Checkbox: CheckboxStub }
+  const SUPPORTED = {
+    method: 'sobol',
+    include_prediction_items: false,
+    prediction_features_supported: true,
+    options: [
+      { name: 'num_samples', type: 'int', default: 256 },
+      // Should CA's schema list it, the generic loop must not draw a second box.
+      { name: 'include_prediction_items', type: 'bool', default: false },
+    ],
+  }
+  const mountSA = (props = {}) =>
+    mount(SensitivityPanel, {
+      props: { defaults: SUPPORTED, canRun: true, predictionFeatureCount: 2, ...props },
+      global: { stubs: boxStubs },
+    })
+  const box = (w) => w.find('[data-testid="sa-include-prediction-items"]')
+  const lastChange = (w) => w.emitted('change').at(-1)[0]
+
+  it('is offered, once, with the hint about which items become features', () => {
+    const w = mountSA()
+    expect(w.findAll('[data-testid="sa-include-prediction-items"]')).toHaveLength(1)
+    expect(w.find('#sa-opt-include_prediction_items').exists()).toBe(false)
+    expect(box(w).attributes('disabled')).toBeUndefined()
+    expect(w.find('[data-testid="sa-include-prediction-items-hint"]').text()).toContain(
+      'Prediction items with an operation become features; the others are skipped.',
+    )
+  })
+
+  it('carries the choice in the settings the run and the pipeline export use', async () => {
+    const w = mountSA()
+    expect(lastChange(w).include_prediction_items).toBe(false)
+    await box(w).trigger('change')
+    expect(lastChange(w).include_prediction_items).toBe(true)
+    await w.find('[data-testid="run-sensitivity"]').trigger('click')
+    expect(w.emitted('run')[0][0].include_prediction_items).toBe(true)
+  })
+
+  it('starts from the server default', () => {
+    const w = mountSA({ defaults: { ...SUPPORTED, include_prediction_items: true } })
+    expect(lastChange(w).include_prediction_items).toBe(true)
+  })
+
+  it('is disabled, with the reason, when no prediction_item has an operation', () => {
+    const w = mountSA({ predictionFeatureCount: 0 })
+    expect(box(w).attributes('disabled')).toBeDefined()
+    expect(w.find('[data-testid="sa-include-prediction-items-field"]').attributes('title')).toContain(
+      'no prediction_items with an operation',
+    )
+  })
+
+  it('is disabled, with the reason, when libcuflynx cannot do it', () => {
+    const w = mountSA({ defaults: { ...SUPPORTED, prediction_features_supported: false } })
+    expect(box(w).attributes('disabled')).toBeDefined()
+    expect(w.find('[data-testid="sa-include-prediction-items-field"]').attributes('title')).toContain(
+      'libcuflynx',
+    )
+  })
+
+  it('is never left ticked once it stops applying', async () => {
+    const w = mountSA()
+    await box(w).trigger('change')
+    expect(lastChange(w).include_prediction_items).toBe(true)
+    await w.setProps({ predictionFeatureCount: 0 })
+    expect(lastChange(w).include_prediction_items).toBe(false)
+  })
+})
+
+describe('SensitivityPanel "Include prediction items" for local SA', () => {
+  const CheckboxStub = {
+    props: ['modelValue', 'disabled'],
+    emits: ['update:modelValue'],
+    template:
+      '<input type="checkbox" :disabled="disabled" :checked="modelValue" v-bind="$attrs" @change="$emit(\'update:modelValue\', !modelValue)" />',
+  }
+  it('is offered for the local method too, and sent with it', async () => {
+    const w = mount(SensitivityPanel, {
+      props: {
+        defaults: { method: 'local', prediction_features_supported: true },
+        canRun: true,
+        predictionFeatureCount: 1,
+      },
+      global: { stubs: { ...stubs, Checkbox: CheckboxStub } },
+    })
+    const box = w.find('[data-testid="sa-include-prediction-items"]')
+    expect(box.attributes('disabled')).toBeUndefined()
+    expect(w.find('[data-testid="sa-include-prediction-items-hint"]').text()).toContain(
+      'finite differences',
+    )
+    await box.trigger('change')
+    await w.find('[data-testid="run-sensitivity"]').trigger('click')
+    expect(w.emitted('run')[0][0]).toMatchObject({ method: 'local', include_prediction_items: true })
   })
 })

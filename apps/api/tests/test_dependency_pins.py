@@ -4,7 +4,7 @@ The frozen desktop bundle is built from a clean resolve of `apps/api/pyproject.t
 while developer machines keep whatever they installed before. A pin that disagrees
 with what circulatory_autogen needs therefore breaks only the shipped binary
 (v0.1.0 shipped with libcellml resolved past CA's bound and every Python-backend
-generation failing). CI's unit tier doesn't import libcellml at all.
+generation failing).
 
 These tests are deliberately in the *unit* tier (no libcellml import required), so
 they run everywhere the build does.
@@ -33,6 +33,20 @@ def test_libcellml_floor_is_0_7_2():
     exponent, so models with imported units fail with a units mismatch. The bundle is
     built from a clean resolve of pyproject.toml, so the floor is what ships."""
     assert _requirement("libcellml") == "libcellml>=0.7.2"
+
+
+def test_the_unit_tier_installs_what_ca_workflow_planning_imports():
+    """CA's workflow planner reads a CellML target's constants with libcellml and
+    imports its solver wrappers (scipy), so the workflow editor and view tests in the
+    unit tier need both. Without them in ci.yml's unit install those tests fail there
+    with "No module named ..."; below the floor they would test a libcellml the app
+    never ships."""
+    ci = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "ci.yml").read_text()
+    install = re.search(r"name: Install unit-test deps\s+run: (.*)", ci)
+    assert install, "no 'Install unit-test deps' step in ci.yml"
+    packages = install.group(1).split()
+    assert f'"{_requirement("libcellml")}"' in packages
+    assert "scipy" in packages
 
 
 def test_setuptools_stays_below_82():
@@ -78,6 +92,7 @@ SIMULATION_PATH_DEPS = [
     "ruamel.yaml",
     "rdflib",
     "pint",
+    "jinja2",
 ]
 
 # CA's analysis-path packages, declared in the [analysis] extra (pip names). The
@@ -306,3 +321,38 @@ def test_the_full_installs_upgrade_pip_first():
             f"{workflow}: a step passes --build-constraint without upgrading pip "
             f"first:\n{script.strip()[:400]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Raw-recording readers (apps/api/obs_extract)
+# ---------------------------------------------------------------------------
+def test_neo_is_declared_for_wcp_reading():
+    """neo is what makes a whole WCP corpus readable, so it must stay declared.
+
+    myokit is the fallback and reads most files, which is exactly why this needs
+    a test: dropping neo would not fail any test that uses a synthesised WCP --
+    it would only stop about a third of a real corpus from opening, on the user's
+    machine, months later.
+    """
+    text = PYPROJECT.read_text()
+    assert re.search(r'^\s*"neo[^"]*"', text, re.MULTILINE), (
+        "neo must stay in the [dataimport] extra: over 60 real .wcp files myokit "
+        "read 41 and neo read 60."
+    )
+
+
+def test_pyabf_is_not_declared():
+    """ABF is myokit's job. A second reader for it would be duplication.
+
+    ``myokit.formats.axon.AbfFile`` read 21/21 of the .abf corpus, on the same
+    ``SweepSource`` interface the WCP reader uses, and myokit is already a core
+    dependency. The sympathetic_neuron CLI this replaces uses pyabf; porting that
+    choice across would add a dependency for nothing.
+    """
+    text = PYPROJECT.read_text()
+    assert not re.search(r'^\s*"pyabf[^"]*"', text, re.MULTILINE), (
+        "pyabf must not be a dependency: myokit already reads ABF via "
+        "myokit.formats.axon.AbfFile (21/21 on the reference corpus). If you are "
+        "adding it because an .abf would not open, fix the reader in "
+        "obs_extract/readers.py rather than adding a second ABF library."
+    )

@@ -83,9 +83,9 @@ export function useSavedRuns() {
   }
 
   /** Re-read the output directory. Never throws: an unreadable dir just lists nothing. */
-  async function refresh(outputDir = '') {
+  async function refresh(workingDir = '') {
     try {
-      const { runs: found } = await listSavedRuns(outputDir)
+      const { runs: found } = await listSavedRuns(workingDir)
       runs.value = found ?? []
     } catch {
       runs.value = []

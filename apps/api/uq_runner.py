@@ -25,7 +25,9 @@ from pathlib import Path
 import ca_obs
 import emulator_config
 from ca_imports import ensure_ca_path
-from obs_data import data_items_of
+from solver_info_defaults import with_declared_step_defaults
+from obs_data import data_items_of, with_ca_obs_path
+from optimiser_budget import default_method
 
 # Headless matplotlib for any plots circulatory_autogen produces server-side.
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -47,6 +49,8 @@ _UQ_RESERVED = {
     "solver_info", "python_path", "sim_time", "pre_time", "generated_model_format",
     "param_id_method", "num_calls_to_function", "max_patience", "gradient_method",
     "config_outputs_dir",
+    # CA's ia_options for the laplace method (ANALYSIS_OPTIONS['identifiability_analysis']).
+    "ia_options",
 }
 
 #: Histogram resolution. Imported lazily from ca_run_history where the manager
@@ -67,7 +71,7 @@ def _optimiser_options(settings: dict, seed=None) -> dict:
     key); ``None`` omits it."""
     from optimiser_budget import default_num_calls  # noqa: E402 (shipped into runners/ too)
 
-    method = settings.get("param_id_method") or "genetic_algorithm"
+    method = settings.get("param_id_method") or default_method()
     num_calls = settings.get("num_calls_to_function")
     if num_calls is None or (isinstance(num_calls, str) and not num_calls.strip()):
         num_calls = default_num_calls(method, debug=bool(settings.get("DEBUG", False)))
@@ -118,6 +122,9 @@ def _solver_info(config: dict, settings: dict) -> dict:
     Settings popup) with the solver name + CVODE step defaults filled in."""
     si = dict(config.get("solver_info") or {})
     si.setdefault("solver", config.get("solver") or settings.get("solver", "CVODE_myokit"))
+    # The solver's own step defaults first, so CVODE's 1e-4 cap only reaches solvers
+    # that list it (see solver_info_defaults and CA's solver_info_fields).
+    si = with_declared_step_defaults(si["solver"], si)
     if "MaximumStep" in ca_obs.solver_info_keys(si["solver"]):
         si.setdefault("MaximumStep", settings.get("MaximumStep", 0.0001))
     # No MaximumNumberOfSteps default: CA fills its own for the backends that use it.
@@ -134,9 +141,25 @@ def _mle_obs_path(config, cost_type: str) -> str:
     for item in data_items_of(obs):
         if isinstance(item, dict):
             item["cost_type"] = cost_type
-    out = os.path.join(config["output_dir"], "uq_obs_data.json")
-    Path(out).write_text(json.dumps(obs), encoding="utf-8")
-    return out
+    # An input of the run, so it is stored with the working dir's inputs as a version of
+    # its own.
+    import working_dir  # noqa: E402 (shipped into runners/ too)
+
+    return str(working_dir.store(config["output_dir"], "obs_data",
+                                 json.dumps(obs).encode("utf-8"), "uq_obs_data.json"))
+
+
+#: CA's ia_options method whose result is a Gaussian posterior.
+LAPLACE = "Laplace"
+
+
+def _ia_options(settings: dict) -> dict:
+    """CA's ``ia_options`` from the UI settings: ``settings['ia_options']`` (built
+    from CA's descriptors) without blanks, defaulting the method to Laplace."""
+    opts = {k: v for k, v in (settings.get("ia_options") or {}).items()
+            if v is not None and v != ""}
+    opts.setdefault("method", LAPLACE)
+    return opts
 
 
 def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
@@ -149,7 +172,7 @@ def _make_param_id(config, settings, obs_path, *, mcmc, options_key, options):
     kwargs = dict(
         model_path=config["model_path"],
         model_type=config.get("model_type", "cellml"),
-        param_id_method=settings.get("param_id_method", "genetic_algorithm"),
+        param_id_method=settings.get("param_id_method") or default_method(),
         mcmc_instead=mcmc,
         file_name_prefix=config.get("file_prefix", "model"),
         params_for_id_path=config["params_path"],
@@ -215,6 +238,7 @@ def _distributions(flat, qnames):
 
 def run(config: dict) -> dict:
     _ensure_ca_on_path()
+    config = with_ca_obs_path(config)
     import numpy as np
 
     from ca_imports import ca_from, ca_import  # noqa: E402 (shipped into runners/ too)
@@ -302,10 +326,17 @@ def run(config: dict) -> dict:
         )
         ia.set_best_param_vals(best)
         ensure_mle_cost_type_for_bayesian_inner(cvs.param_id, inp)
-        ia.run({"method": "Laplace"})
+        ia_opts = _ia_options(settings)
+        ia.run(ia_opts)
         rank = getattr(ia, "rank", 0)
         if rank != 0:
             return {"rank": rank}
+        if ia_opts["method"] != LAPLACE:
+            # Profile likelihood: CA wrote the profiles under output_dir, and they
+            # are the result; there is no posterior to sample.
+            print(META_MARKER + json.dumps(
+                {"method": method, "ia_method": ia_opts["method"]}), flush=True)
+            return {"rank": 0, "method": method}
         # CA renamed the misspelt `mean_Lapalace` -> `mean_Laplace`; read the
         # corrected name but fall back to the old one so we work against any CA.
         laplace_mean = getattr(ia, "mean_Laplace", None)
@@ -326,8 +357,15 @@ def run(config: dict) -> dict:
 
     ca_run_history.write_uq_samples(output_dir, np.asarray(flat), qnames)
 
-    coverage = _posterior_predictive(config, settings, output_dir, engine)
-    print(META_MARKER + json.dumps({"method": method}), flush=True)
+    # A Laplace approximation has no chain: its check draws from the samples above and is
+    # saved beside them, in output_dir, which the meta line names for the manager.
+    laplace = method == "laplace"
+    coverage = _posterior_predictive(settings, engine, samples=flat if laplace else None,
+                                     output_dir=output_dir if laplace else None)
+    meta = {"method": method}
+    if laplace and coverage is not None:
+        meta["predictive_dir"] = output_dir
+    print(META_MARKER + json.dumps(meta), flush=True)
     result = {"rank": 0, "method": method,
               "params": _distributions(np.asarray(flat), qnames)}
     if coverage is not None:
@@ -335,13 +373,18 @@ def run(config: dict) -> dict:
     return result
 
 
-def _posterior_predictive(config, settings, output_dir, engine):
+def _posterior_predictive(settings, engine, samples=None, output_dir=None):
     """Push posterior draws back through the model and report coverage.
 
     A chain says what the parameters could be; it does not say whether the model
     at those parameters reproduces what was measured. Run here rather than left
     to the user because the engine is already built and the chain is already on
     disk -- the check costs one sweep and answers the question the chain cannot.
+
+    ``samples`` (with ``output_dir``, where the check is saved) are the draws of a
+    posterior with no chain (Laplace); without them CA reads the MCMC chain from, and
+    saves the check into, the MCMC run's own directory. An MCMC engine built without a
+    calibration has no ``param_id``; CA's check evaluates it through ``engine_of``.
 
     Returns None, quietly, when the engine predates the check or the user turned
     it off. A UQ run that produced a posterior has not failed because it could
@@ -366,8 +409,13 @@ def _posterior_predictive(config, settings, output_dir, engine):
     print(f"Posterior predictive: {num_samples} draws through the model",
           flush=True)
     try:
-        result = run_check(client=engine, num_samples=num_samples,
-                           output_dir=output_dir, save=True)
+        if samples is None:
+            # No output_dir: CA reads the chain from, and saves the check into, the MCMC
+            # run's own directory.
+            result = run_check(client=engine, num_samples=num_samples, save=True)
+        else:
+            result = run_check(client=engine, num_samples=num_samples, save=True,
+                               samples=samples, output_dir=output_dir)
     except Exception as exc:  # noqa: BLE001 - the posterior is still the result
         print(f"WARNING: posterior predictive check failed: {exc}", flush=True)
         return None

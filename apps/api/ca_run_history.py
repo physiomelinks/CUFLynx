@@ -9,7 +9,7 @@ triple, and the history CSVs that drive the live plots.
 
 CUFLynx used to have the runner serialise a summary of all that into its own
 ``results.json`` and hand it back to the manager. That put a file in the user's
-outputs directory that is no part of the study, and made CUFLynx the author of a
+working dir that is no part of the study, and made CUFLynx the author of a
 format that duplicated CA's -- so the two could disagree, and the same history
 parsing existed twice (``calibration.py`` and ``export_pipeline.py``, with
 different tolerance rules). Reading CA's own files removes both problems: CA is
@@ -56,40 +56,93 @@ def _ca_run_history():
         return None
 
 
+#: CA's ``paramID.UQ_CASE_METHOD`` and ``MCMC_CHAIN_FILE``, for a CA that predates them.
+_UQ_CASE_METHOD = "mcmc"
+MCMC_CHAIN_FILE = "mcmc_chain.npy"
+
+
+def uq_case_method() -> str:
+    """What CA names an MCMC run's directory for: ``<this>_<prefix>_<obs>``
+    (``paramID.case_dir_name``), beside the calibration's ``<method>_<prefix>_<obs>``."""
+    from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+
+    try:
+        ensure_ca_path()
+        return str(ca_from("param_id.paramID", "UQ_CASE_METHOD"))
+    except Exception:  # noqa: BLE001 - a CA without it, or none at all
+        return _UQ_CASE_METHOD
+
+
+def is_uq_run_dir(path: str) -> bool:
+    return os.path.basename(os.path.normpath(path)).startswith(uq_case_method() + "_")
+
+
+def _newest_holding(output_dir: str, names, skip_uq: bool = False) -> str | None:
+    """``output_dir`` if it holds one of ``names``, else its subdir holding the newest."""
+    if any(os.path.isfile(os.path.join(output_dir, n)) for n in names):
+        return output_dir
+    candidates = []
+    for entry in os.scandir(output_dir):
+        if not entry.is_dir() or (skip_uq and is_uq_run_dir(entry.path)):
+            continue
+        stamps = [os.path.getmtime(os.path.join(entry.path, n)) for n in names
+                  if os.path.isfile(os.path.join(entry.path, n))]
+        if stamps:
+            candidates.append((max(stamps), entry.path))
+    return max(candidates)[1] if candidates else None
+
+
 def find_run_dir(output_dir: str) -> str | None:
-    """The directory CA actually wrote this run into, or None.
+    """The directory CA wrote this study's calibration into, or None.
 
     CA names it ``<param_id_method>_<file_prefix>_<obs_prefix>`` under the
     configured output dir, so the caller cannot know it without repeating CA's
     naming rule -- which is exactly the kind of duplicated knowledge this module
     exists to avoid. Delegates to CA when it can.
+
+    An MCMC run's directory (:func:`uq_run_dir`) is passed over while a
+    calibration's is there: it holds a ``best_param_vals.npy`` only as the
+    posterior median of a chain with no calibration behind it.
     """
     if not output_dir or not os.path.isdir(output_dir):
         return None
+    found = None
     mod = _ca_run_history()
     if mod is not None:
         try:
             found = mod.find_run_dir(output_dir)
         except Exception:  # noqa: BLE001 - a reader must never fail a finished run
             found = None
-        if found:
-            return str(found)
-    # Fallback: the dir itself if it holds a result file, else the newest subdir
-    # that does.
-    if any(os.path.isfile(os.path.join(output_dir, n)) for n in _RESULT_FILES):
-        return output_dir
-    candidates = []
-    for entry in os.scandir(output_dir):
-        if not entry.is_dir():
-            continue
-        for name in _RESULT_FILES:
-            path = os.path.join(entry.path, name)
-            if os.path.isfile(path):
-                candidates.append((os.path.getmtime(path), entry.path))
-                break
-    if not candidates:
+    if not found:
+        found = _newest_holding(output_dir, _RESULT_FILES)
+    if found and is_uq_run_dir(found):
+        found = _newest_holding(output_dir, _RESULT_FILES, skip_uq=True) or found
+    return str(found) if found else None
+
+
+def uq_run_dir(output_dir: str) -> str | None:
+    """The directory CA wrote this study's MCMC run into, or None.
+
+    CA gives an MCMC run a directory of its own, ``<uq_case_method>_<prefix>_<obs>``,
+    holding the chain, ``param_names.csv`` and the posterior predictive check; a
+    folder written by an older CA has the chain in the calibration's directory. The
+    directory holding the newest chain wins, else the newest MCMC directory (a run
+    that has not written its chain yet).
+    """
+    if not output_dir or not os.path.isdir(output_dir):
         return None
-    return max(candidates)[1]
+    found = _newest_holding(output_dir, (MCMC_CHAIN_FILE,))
+    if found:
+        return found
+    named = [(os.path.getmtime(entry.path), entry.path) for entry in os.scandir(output_dir)
+             if entry.is_dir() and is_uq_run_dir(entry.path)]
+    return max(named)[1] if named else None
+
+
+def uq_source_dir(output_dir: str) -> str:
+    """Where to read this study's MCMC artefacts: :func:`uq_run_dir`, else the
+    calibration's directory, else ``output_dir`` itself."""
+    return uq_run_dir(output_dir) or find_run_dir(output_dir) or output_dir
 
 
 def has_results(output_dir: str, newer_than: float | None = None) -> bool:
@@ -102,7 +155,7 @@ def has_results(output_dir: str, newer_than: float | None = None) -> bool:
 
     ``newer_than`` is the moment the run started. Reading through
     :func:`find_run_dir` can reach a ``<case_type>`` subdirectory left by an
-    *earlier* run in the same outputs directory -- something the old direct read
+    *earlier* run in the same working dir -- something the old direct read
     could not do -- so a run whose own results are missing would otherwise be
     reported with someone else's numbers. A second of slack absorbs coarse
     filesystem timestamps.
@@ -275,6 +328,21 @@ def error_vectors(output_dir: str) -> dict:
     }
 
 
+def has_error_vectors(output_dir: str, newer_than: float | None = None) -> bool:
+    """Whether the run's best-fit error vectors are written (``percent_error_vec.npy``
+    in :func:`find_run_dir`), and since ``newer_than`` (the run's start, with
+    :func:`has_results`' second of slack): an older libcuflynx leaves an earlier run's
+    vectors in place when a run starts."""
+    run_dir = find_run_dir(output_dir)
+    path = os.path.join(run_dir, "percent_error_vec.npy") if run_dir else None
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        return newer_than is None or os.path.getmtime(path) >= newer_than - 1.0
+    except OSError:
+        return False
+
+
 #: The suffix CUFLynx's runner gives a calibrated model. **The one definition.**
 #: It was spelled out in four places -- the runner that writes it, the reader
 #: below, the loader that hunts for one, and the loader's prefix parser -- which
@@ -340,11 +408,43 @@ def ca_calibrated_model(output_dir: str, file_prefix: str | None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Validation against held-out data (CA #535)
+# ---------------------------------------------------------------------------
+#: CA's ``param_id.validation.VALIDATION_RESULTS_FILE``: ``{"items": [...]}``, one
+#: entry per prediction_item carrying data, written into the run directory.
+VALIDATION_RESULTS_FILE = "validation_results.json"
+
+
+def validation_results(output_dir: str) -> dict | None:
+    """The validation of the best fit against held-out data, or None.
+
+    None -- never an empty validation -- when the run had nothing to validate,
+    and when the file predates the run's best fit: a study whose held-out data
+    was since removed would otherwise keep showing the last run's scores.
+    """
+    run_dir = find_run_dir(output_dir)
+    if not run_dir:
+        return None
+    found = _json(run_dir, VALIDATION_RESULTS_FILE)
+    if not isinstance(found, dict) or not found.get("items"):
+        return None
+    best = os.path.join(run_dir, "best_param_vals.npy")
+    try:
+        if os.path.isfile(best) and (
+                os.path.getmtime(os.path.join(run_dir, VALIDATION_RESULTS_FILE))
+                < os.path.getmtime(best) - 1.0):
+            return None
+    except OSError:
+        return None
+    return {"items": list(found["items"])}
+
+
+# ---------------------------------------------------------------------------
 # Sensitivity
 # ---------------------------------------------------------------------------
 #: CA writes local sensitivities as one CSV per scaling, indexed by observable
 #: with one column per calibrated variable (``sensitivityAnalysis.py``). CUFLynx's
-#: own local-SA arm writes the same two files, so the outputs directory holds one
+#: own local-SA arm writes the same two files, so the working dir holds one
 #: format whichever arm produced them -- and so the exported plotting script has
 #: one reader (#210).
 LOCAL_SA_FILES = {
@@ -392,7 +492,9 @@ def _read_matrix_csv(path: str) -> tuple[list[str], list[str], dict]:
         for col, cell in zip(header, row[1:]):
             text = (cell or "").strip()
             try:
-                values[col] = float(text)
+                value = float(text)
+                # NaN (as numpy writes it) reads as missing, like an empty cell
+                values[col] = None if value != value else value
             except ValueError:
                 # Empty or NaN: CA marks a failed evaluation as NaN deliberately,
                 # to keep it distinct from a real zero.
@@ -412,6 +514,42 @@ def local_sensitivity(output_dir: str) -> dict | None:
         "param_names": param_names,
         "output_names": output_names,
     }
+
+
+#: libcuflynx's ``sensitivityAnalysis.LOCAL_SIGNED_FILE``: the signed relative local
+#: sensitivity d ln Y / d ln p = (p / Y) dY/dp (NaN where |Y| <= 1e-30), its rows labelled
+#: as the Sobol indices' outputs (``sobolSA.output_labels``) and its columns by the
+#: parameters' entry labels, so it shares the Sobol heatmap's axes.
+LOCAL_SIGNED_FILE = "local_sensitivity_signed.csv"
+
+
+def local_sensitivity_signed(output_dir: str) -> dict | None:
+    """The signed local sensitivities libcuflynx wrote (:data:`LOCAL_SIGNED_FILE`), in
+    :func:`local_sensitivity`'s shape, or None when there are none. A NaN (undefined at
+    Y = 0) reads as None."""
+    path = os.path.join(output_dir or "", LOCAL_SIGNED_FILE)
+    if not output_dir or not os.path.isfile(path):
+        return None
+    output_names, param_names, table = _read_matrix_csv(path)
+    return {
+        "indices": {"local": table},
+        "param_names": param_names,
+        "output_names": output_names,
+    }
+
+
+def step_local_sensitivity(result: dict | None) -> dict | None:
+    """A workflow local-SA step's sensitivities, from its ``step_result.json``: the signed
+    file it names (``local_sensitivity_signed``), else, from a libcuflynx that predates it,
+    the unsigned ``local_sensitivity_relative.csv`` in its ``sensitivity_dir``."""
+    result = result or {}
+    signed = result.get("local_sensitivity_signed")
+    if signed:
+        found = local_sensitivity_signed(os.path.dirname(signed))
+        if found:
+            return found
+    directory = result.get("sensitivity_dir")
+    return local_sensitivity(directory) if directory and os.path.isdir(directory) else None
 
 
 def sobol_indices(output_dir: str) -> dict | None:
@@ -442,7 +580,349 @@ def sobol_indices(output_dir: str) -> dict | None:
             indices[kind][output][param] = table[param].get(column)
     if not indices:
         return None
-    return {"indices": indices, "param_names": params, "output_names": output_names}
+    return {"indices": indices, "param_names": params, "output_names": output_names,
+            # Only this CSV's columns: a run without prediction items writes no JSON,
+            # so one left by an earlier run in the directory must not tag anything.
+            "prediction_outputs": [o for o in sobol_prediction_outputs(output_dir)
+                                   if o in output_names]}
+
+
+#: libcuflynx's ``sobol_SA.SOBOL_OUTPUT_FEATURES_FILE``: what each Sobol output column
+#: is (``kind``: data_item / prediction_item / cost), written with include_prediction_items.
+SOBOL_OUTPUT_FEATURES_FILE = "sobol_output_features.json"
+
+
+def sobol_prediction_outputs(output_dir: str) -> list[str]:
+    """The Sobol outputs that are prediction features, from libcuflynx's own record.
+
+    Read, never inferred from the labels: a data_item's label is free text. ``[]``
+    when the run did not include prediction items (libcuflynx then writes no file).
+    """
+    found = _json(output_dir, SOBOL_OUTPUT_FEATURES_FILE)
+    outputs = found.get("outputs") if isinstance(found, dict) else None
+    return [str(o["output"]) for o in outputs or []
+            if isinstance(o, dict) and o.get("kind") == "prediction_item" and o.get("output")]
+
+
+# ---------------------------------------------------------------------------
+# Sobol runs and parameter reductions
+# ---------------------------------------------------------------------------
+#: CA's Sobol run files: the indices, and beside them the samples, the outputs and
+#: the local Jacobian a ``pca`` reduction reads, plus ``sobol_problem.json``.
+SOBOL_INDICES_GLOB = "all_outputs_n*_Sobol_indices.csv"
+SOBOL_PROBLEM_FILE = "sobol_problem.json"
+#: A reduction's report and its params_for_id, written by CA's ``ParamReduction``.
+PARAM_REDUCTION_FILE = "param_reduction.json"
+REDUCED_PARAMS_FOR_ID_FILE = "reduced_params_for_id.json"
+
+
+def _sobol_indices_files(directory: str) -> list[str]:
+    import glob  # noqa: PLC0415
+
+    return sorted(glob.glob(os.path.join(directory, SOBOL_INDICES_GLOB)))
+
+
+def sobol_runs(root: str, max_depth: int = 4) -> list[dict]:
+    """The Sobol runs under ``root``, newest first.
+
+    ``max_depth`` 4 reaches a study workflow step's run,
+    ``<working dir>/workflows/<name>/<step>/sensitivity``.
+
+    One entry per directory holding CA's ``all_outputs_n<N>_Sobol_indices.csv``:
+    ``{dir, num_samples, mtime, has_samples}``. ``has_samples`` says whether the run
+    also saved the samples, outputs and ``sobol_problem.json`` a ``pca`` reduction
+    reads; a run without them can only be reduced by ``sobol``.
+    """
+    import re  # noqa: PLC0415
+
+    runs: list[dict] = []
+    if not root or not os.path.isdir(root):
+        return runs
+    base_depth = root.rstrip(os.sep).count(os.sep)
+    for directory, subdirs, _files in os.walk(root):
+        if directory.count(os.sep) - base_depth >= max_depth:
+            subdirs[:] = []
+        for path in _sobol_indices_files(directory):
+            stem = path[: -len("_indices.csv")]
+            match = re.search(r"_n(\d+)_Sobol_indices\.csv$", path)
+            runs.append({
+                "dir": directory,
+                "indices": os.path.basename(path),
+                "num_samples": int(match.group(1)) if match else None,
+                "mtime": os.path.getmtime(path),
+                "has_samples": all(os.path.isfile(p) for p in (
+                    f"{stem}_samples.csv", f"{stem}_outputs.csv",
+                    os.path.join(directory, SOBOL_PROBLEM_FILE))),
+            })
+    runs.sort(key=lambda r: r["mtime"], reverse=True)
+    return runs
+
+
+def find_param_reduction(sensitivity_dir: str, newer_than: float | None = None,
+                         max_depth: int = 2) -> str | None:
+    """The directory of the newest ``param_reduction.json`` under ``sensitivity_dir``.
+
+    CA writes a reduction into ``param_reduction_options.output_dir`` (by default
+    ``<sensitivity_dir>/param_reduction``), so the report is found rather than its
+    location derived a second time here. ``newer_than`` (a job's start time) skips
+    an earlier run's report, so a run whose own report is missing fails.
+    """
+    if not sensitivity_dir or not os.path.isdir(sensitivity_dir):
+        return None
+    best, best_mtime = None, None
+    base_depth = sensitivity_dir.rstrip(os.sep).count(os.sep)
+    for directory, subdirs, files in os.walk(sensitivity_dir):
+        if directory.count(os.sep) - base_depth >= max_depth:
+            subdirs[:] = []
+        if PARAM_REDUCTION_FILE not in files:
+            continue
+        mtime = os.path.getmtime(os.path.join(directory, PARAM_REDUCTION_FILE))
+        if newer_than is not None and mtime < newer_than:
+            continue
+        if best_mtime is None or mtime > best_mtime:
+            best, best_mtime = directory, mtime
+    return best
+
+
+def param_reduction(report_dir: str) -> dict | None:
+    """CA's parameter-reduction report in ``report_dir``, or None.
+
+    The ``param_reduction.json`` as CA wrote it (``reduction``, ``selected`` and, for
+    ``pca``, ``modes``, ``unexplained_effects`` and the rest), plus three resolved
+    paths: ``report_dir``, ``reduced_params_for_id`` (the file a calibration
+    adopts) and ``heatmap`` (the ``pca`` mode heatmap, or None), and
+    ``mode_composition`` (``pca_mode_composition``, or None).
+    """
+    if not report_dir:
+        return None
+    path = os.path.join(report_dir, PARAM_REDUCTION_FILE)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            report = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(report, dict) or not isinstance(report.get("selected"), list):
+        return None
+    reduced = report.get("reduced_params_for_id")
+    if not reduced or not os.path.isfile(reduced):
+        reduced = os.path.join(report_dir, REDUCED_PARAMS_FOR_ID_FILE)
+    files = report.get("files") or {}
+    heatmap = files.get("heatmap")
+    heatmap = os.path.join(report_dir, heatmap) if heatmap else None
+    return {
+        **report,
+        "report_dir": report_dir,
+        "reduced_params_for_id": reduced if os.path.isfile(reduced) else None,
+        "heatmap": heatmap if heatmap and os.path.isfile(heatmap) else None,
+        "mode_composition": pca_mode_composition(report_dir, files),
+    }
+
+
+def _csv_rows(path: str) -> list[dict] | None:
+    try:
+        with open(path, encoding="utf-8", newline="") as fh:
+            return list(csv.DictReader(fh))
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return None
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None  # NaN reads as None
+
+
+def pca_mode_composition(report_dir: str, files: dict) -> list[dict] | None:
+    """What each ``pca`` mode is made of, from the two CSVs CA's reduction names.
+
+    ``files["modes"]`` (``pca_modes.csv``) holds each mode's loading on every
+    feature, in ``loading_<feature label>`` columns; ``files["mode_indices"]``
+    (``pca_mode_sobol_indices.csv``) the parameters' ``S1_mode_<k>`` and
+    ``ST_mode_<k>`` for each mode. One ``{mode, features: [{label, loading}],
+    parameters: [{parameter, S1, ST}]}`` per mode, in CA's order; ``parameters``
+    is empty without the indices file. None when the modes file is absent (a
+    ``sobol`` reduction, or a CA that writes no loadings).
+    """
+    name = files.get("modes")
+    rows = _csv_rows(os.path.join(report_dir, name)) if name else None
+    if not rows:
+        return None
+    prefix = "loading_"
+    composition: list[dict] = []
+    for row in rows:
+        try:
+            mode = int(row.get("mode"))
+        except (TypeError, ValueError):
+            continue
+        composition.append({
+            "mode": mode,
+            "features": [{"label": key[len(prefix):], "loading": _float_or_none(value)}
+                         for key, value in row.items()
+                         if key and key.startswith(prefix)],
+            "parameters": [],
+        })
+    name = files.get("mode_indices")
+    indices = _csv_rows(os.path.join(report_dir, name)) if name else None
+    for entry in composition:
+        k = entry["mode"]
+        for row in indices or []:
+            if f"ST_mode_{k}" not in row:
+                continue
+            entry["parameters"].append({
+                "parameter": row.get("Parameter"),
+                "S1": _float_or_none(row.get(f"S1_mode_{k}")),
+                "ST": _float_or_none(row.get(f"ST_mode_{k}")),
+            })
+    return composition
+
+
+# ---------------------------------------------------------------------------
+# Progress files (CA #702)
+# ---------------------------------------------------------------------------
+#: A Sobol run, an emulator training and a profile likelihood each rewrite this in the
+#: directory their results go to (``libcuflynx.utilities.progress``, schema
+#: ``progress.schema.json``): ``{kind, state, started, updated, phases[{name, state, done,
+#: total, failed, ...}]}``.
+PROGRESS_FILE = "progress.json"
+#: The Sobol run's design (samples by parameters, in run order), its columns, and one int8
+#: per row: 0 not run, 1 ran, 2 failed.
+SOBOL_DESIGN = "sobol_design.npy"
+SOBOL_DESIGN_PARAMS = "sobol_design_params.json"
+SOBOL_SAMPLE_STATUS = "sobol_sample_status.npy"
+#: S1 and ST with their confidence half-widths at growing numbers of base samples, written
+#: at the end: ``{n: [...], outputs: {output: {S1: {param: [[value, conf], ...]}, ST}}}``.
+SOBOL_CONVERGENCE = "sobol_convergence.json"
+
+
+def run_progress(directory: str, newer_than: float | None = None,
+                 finished: bool = False) -> dict | None:
+    """The ``progress.json`` in ``directory``, or None.
+
+    ``newer_than`` (a time stamp) refuses a file last written before it: an earlier run's,
+    left in a directory reused by this one. ``finished`` says the run's process has exited:
+    CA leaves a killed run ``running``, so such a file, and its running phases, read
+    ``stopped``.
+    """
+    path = os.path.join(directory or "", PROGRESS_FILE)
+    try:
+        if newer_than is not None and os.path.getmtime(path) < newer_than:
+            return None
+    except OSError:
+        return None
+    document = _json(directory, PROGRESS_FILE)
+    if not isinstance(document, dict) or not isinstance(document.get("phases"), list):
+        return None
+    if finished and document.get("state") == "running":
+        document["state"] = "stopped"
+        for phase in document["phases"]:
+            if isinstance(phase, dict) and phase.get("state") in ("running", "queued"):
+                phase["state"] = "stopped"
+    return document
+
+
+def find_progress(root: str, kind: str, newer_than: float | None = None,
+                  finished: bool = False, depth: int = 3) -> dict | None:
+    """The newest ``progress.json`` of ``kind`` at most ``depth`` folders below ``root``,
+    read as :func:`run_progress` reads it: for a run whose output folder is only named once
+    it is over (an emulator's bundle, a workflow step's profile likelihood)."""
+    if not root or not os.path.isdir(root):
+        return None
+    base = os.path.normpath(root).count(os.sep)
+    found = []
+    for folder, subfolders, files in os.walk(root):
+        if os.path.normpath(folder).count(os.sep) - base >= depth:
+            subfolders[:] = []
+        if PROGRESS_FILE in files:
+            found.append(folder)
+    found.sort(key=lambda d: os.path.getmtime(os.path.join(d, PROGRESS_FILE)), reverse=True)
+    for folder in found:
+        document = run_progress(folder, newer_than=newer_than, finished=finished)
+        if document is not None and document.get("kind") == kind:
+            return document
+    return None
+
+
+def sobol_design(directory: str, max_points: int = 2000) -> dict | None:
+    """A Sobol run's design and which samples failed, for a pairs plot, or None.
+
+    ``{names, bounds, rows, status, counts: {total, ran, failed, not_run}}``: ``rows`` are
+    every failed sample and an even spread of the others that ran, at most ``max_points``
+    in all, with ``status`` (1 ran, 2 failed) beside each. Samples not run yet are left out.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    params = _json(directory, SOBOL_DESIGN_PARAMS)
+    try:
+        design = np.load(os.path.join(directory, SOBOL_DESIGN))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(params, dict) or design.ndim != 2:
+        return None
+    try:
+        status = np.load(os.path.join(directory, SOBOL_SAMPLE_STATUS))
+    except Exception:  # noqa: BLE001
+        status = np.zeros(len(design), dtype=np.int8)
+    if status.shape != (len(design),):
+        status = np.zeros(len(design), dtype=np.int8)
+    failed = np.flatnonzero(status == 2)
+    ran = np.flatnonzero(status == 1)
+    room = max(max_points - len(failed), 0)
+    if len(ran) > room:
+        ran = ran[np.linspace(0, len(ran) - 1, room).astype(int)] if room else ran[:0]
+    keep = np.sort(np.concatenate([failed[:max_points], ran]))
+    return {
+        "names": [str(n) for n in params.get("names") or []],
+        "bounds": params.get("bounds"),
+        "rows": design[keep].tolist(),
+        "status": status[keep].astype(int).tolist(),
+        "counts": {"total": int(len(design)), "ran": int((status == 1).sum()),
+                   "failed": int((status == 2).sum()), "not_run": int((status == 0).sum())},
+    }
+
+
+def sobol_convergence(directory: str) -> dict | None:
+    """A finished Sobol run's ``sobol_convergence.json``, or None."""
+    document = _json(directory, SOBOL_CONVERGENCE)
+    if not isinstance(document, dict) or not isinstance(document.get("outputs"), dict):
+        return None
+    return document
+
+
+# ---------------------------------------------------------------------------
+# Profile likelihood
+# ---------------------------------------------------------------------------
+#: CA's ``ProfileLikelihood`` writes ``profile_likelihood/summary.json`` and one JSON
+#: per profiled entry into the identifiability run's output directory.
+PROFILE_LIKELIHOOD_SUBDIR = "profile_likelihood"
+
+
+def profile_likelihood(output_dir: str) -> list | None:
+    """The profiles CA's profile-likelihood analysis wrote, or None.
+
+    One ``{param_name, best_val, ci_95, param_values, costs}`` per profiled entry,
+    in the order of CA's ``summary.json``.
+    """
+    results = os.path.join(output_dir or "", PROFILE_LIKELIHOOD_SUBDIR)
+    summary = _json(results, "summary.json")
+    if not isinstance(summary, dict):
+        return None
+    profiles = []
+    for name in sorted(os.listdir(results)):
+        if not name.endswith(".json") or name == "summary.json":
+            continue
+        profile = _json(results, name)
+        if not isinstance(profile, dict) or "param_name" not in profile:
+            continue
+        profiles.append({key: profile.get(key) for key in (
+            "param_name", "best_val", "best_cost", "ci_95", "param_values", "costs")})
+    order = [str(p) for p in summary.get("parameters") or []]
+    profiles.sort(key=lambda p: order.index(str(p["param_name"]))
+                  if str(p["param_name"]) in order else len(order))
+    return profiles
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +945,7 @@ UQ_SAMPLES_FILE = "uq_posterior_samples.npy"
 #: sampled at and the value the manager bins at cannot drift apart.
 NUM_BINS = 40
 
-#: Where CA's emulator trainer puts a bundle, relative to the outputs directory,
+#: Where CA's emulator trainer puts a bundle, relative to the working dir,
 #: and the file that describes it (CA #333). Mirrors CA's ``resolve_emulator_dir``:
 #: ``<param_id_output_dir>/emulators/<file_prefix>_<obs_prefix>``.
 EMULATOR_SUBDIR = "emulators"
@@ -539,6 +1019,28 @@ def emulator_dir(output_dir: str, file_prefix: str, obs_path: str | None) -> str
     return os.path.join(output_dir, EMULATOR_SUBDIR, f"{file_prefix}_{obs_prefix}")
 
 
+def workflow_emulator_bundles(output_dir: str) -> list[str]:
+    """The emulators the working dir's calibration workflows trained: every done
+    ``emulation`` step's ``emulator_dir``, as CA records it in the step's
+    ``step_result.json`` (``<W>/workflows/<name>/<step>/``)."""
+    runs = os.path.join(output_dir or "", "workflows")
+    if not os.path.isdir(runs):
+        return []
+    out = []
+    for name in sorted(os.listdir(runs)):
+        run = os.path.join(runs, name)
+        if not os.path.isdir(run):
+            continue
+        for entry in sorted(os.listdir(run)):
+            result = step_result(os.path.join(run, entry)) or {}
+            bundle = result.get("emulator_dir")
+            if result.get("kind") == "emulation" and result.get("status") == "done" \
+                    and isinstance(bundle, str) and os.path.isfile(
+                        os.path.join(bundle, EMULATOR_METADATA_FILE)):
+                out.append(bundle)
+    return out
+
+
 def find_emulator_dir(output_dir: str, file_prefix: str | None,
                       obs_path: str | None) -> str | None:
     """Where this run's emulator actually is, or None.
@@ -567,12 +1069,14 @@ def find_emulator_dir(output_dir: str, file_prefix: str | None,
             return conventional
 
     root = os.path.join(output_dir, EMULATOR_SUBDIR)
-    if not os.path.isdir(root):
-        return None
-    try:
-        candidates = [entry.path for entry in os.scandir(root) if entry.is_dir()]
-    except OSError:
-        return None
+    candidates = []
+    if os.path.isdir(root):
+        try:
+            candidates = [entry.path for entry in os.scandir(root) if entry.is_dir()]
+        except OSError:
+            candidates = []
+    # and the emulators the working dir's workflows trained, as emulation steps
+    candidates += workflow_emulator_bundles(output_dir)
 
     bundles = [path for path in candidates if emulator_reusable(path)]
     if not bundles:
@@ -585,6 +1089,164 @@ def find_emulator_dir(output_dir: str, file_prefix: str | None,
             os.path.join(path, EMULATOR_METADATA_FILE)))
 
     return max(bundles, key=rank)
+
+
+def emulator_bundles(root: str) -> list[str]:
+    """Every trained bundle at ``root``, whether it *is* one or *contains* them.
+
+    A study that trains several emulators on one design -- the same simulations
+    fitted by RBF, MLP and a forest -- leaves them side by side under
+    ``emulators/``, and there is then no single right answer to "the emulator for
+    this study". So a declaration may name the container instead of one bundle,
+    and this returns what is actually in it.
+
+    Both shapes are accepted because both are real: a manifest written before this
+    existed names a bundle directly, and a study sharing one jointly-trained
+    emulator still wants to name exactly that one.
+    """
+    if not root or not os.path.isdir(root):
+        return []
+    if emulator_reusable(root) or os.path.isfile(
+            os.path.join(root, EMULATOR_METADATA_FILE)):
+        return [root]
+    try:
+        entries = sorted(entry.path for entry in os.scandir(root) if entry.is_dir())
+    except OSError:
+        return []
+    return [path for path in entries
+            if os.path.isfile(os.path.join(path, EMULATOR_METADATA_FILE))]
+
+
+def emulator_summary(emu_dir: str) -> dict | None:
+    """One bundle, as a row a chooser can be built from.
+
+    Deliberately not the whole metadata: picking between emulators needs the family
+    and how well it did, and shipping every per-feature array for every candidate
+    would send megabytes to render a list.
+
+    ``worst_r2`` leads because it is the number that decides trust -- an emulator
+    misleads a calibration wherever it is weakest, not where it is average -- but
+    the median is carried too, since one pathological feature out of thirty-six is
+    a different situation from a bundle that is uniformly poor.
+    """
+    meta = _json(emu_dir, EMULATOR_METADATA_FILE)
+    if not isinstance(meta, dict):
+        return None
+    scores = []
+    for value in meta.get("feature_r2") or []:
+        try:
+            scores.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    finite = [value for value in scores if value == value and abs(value) != float("inf")]
+    ordered = sorted(finite)
+    median = None
+    if ordered:
+        middle = len(ordered) // 2
+        median = (ordered[middle] if len(ordered) % 2
+                  else (ordered[middle - 1] + ordered[middle]) / 2.0)
+    design = meta.get("design") or {}
+    try:
+        modified = os.path.getmtime(os.path.join(emu_dir, EMULATOR_METADATA_FILE))
+    except OSError:
+        modified = None
+    return {
+        "dir": emu_dir,
+        "name": os.path.basename(emu_dir.rstrip(os.sep)),
+        "model_name": meta.get("model_name"),
+        "num_features": len(scores),
+        "worst_r2": ordered[0] if ordered else None,
+        "median_r2": median,
+        "best_r2": ordered[-1] if ordered else None,
+        "num_samples": design.get("num_used"),
+        "num_stages": design.get("num_stages"),
+        "reused_samples": bool(design.get("reused_samples")),
+        "reusable": emulator_reusable(emu_dir),
+        "modified": modified,
+    }
+
+
+def emulator_choices(output_dir: str, file_prefix: str | None,
+                     obs_path: str | None, declared: str | None = None) -> list[dict]:
+    """Every emulator this study could be read with, best-first.
+
+    ``declared`` is a manifest's word and is believed: whatever it names, bundle or
+    container, is the candidate set and nothing is inferred. Without one the same
+    search :func:`find_emulator_dir` does supplies the candidates, so the list can
+    never omit the bundle that function would have chosen.
+
+    Sorted by ``worst_r2`` descending so the safest emulator is first, with the name
+    breaking ties -- a stable order matters because this drives a list a person picks
+    from, and a list that reshuffles between reads is one they cannot learn.
+    """
+    roots: list[str] = []
+    if declared:
+        roots.append(declared)
+    else:
+        if file_prefix:
+            roots.append(emulator_dir(output_dir, file_prefix, obs_path))
+        roots.append(os.path.join(output_dir or "", EMULATOR_SUBDIR))
+
+    seen: set[str] = set()
+    summaries: list[dict] = []
+    found = [bundle for root in roots for bundle in emulator_bundles(root)]
+    if not declared:
+        # and the emulators the working dir's workflows trained, as emulation steps
+        found += workflow_emulator_bundles(output_dir)
+    for bundle in found:
+        key = os.path.abspath(bundle)
+        if key in seen:
+            continue
+        seen.add(key)
+        summary = emulator_summary(bundle)
+        if summary:
+            summaries.append(summary)
+
+    def rank(row):
+        worst = row.get("worst_r2")
+        # None sorts last rather than as negative infinity by accident: a bundle whose
+        # R2 could not be read is not known to be bad, it is unknown, and putting it
+        # under the ones that are known-bad would be a claim this cannot support.
+        return (worst is not None, worst if worst is not None else 0.0,
+                row.get("name") or "")
+
+    return sorted(summaries, key=rank, reverse=True)
+
+
+def emulator_choice_named(choices: list[dict], path: str | None) -> str | None:
+    """The bundle in ``choices`` that ``path`` names, or None when it names none of them."""
+    if not (path or "").strip():
+        return None
+    target = os.path.abspath(path.strip())
+    for row in choices:
+        if os.path.abspath(row["dir"]) == target:
+            return row["dir"]
+    return None
+
+
+def default_emulator_dir(output_dir: str, file_prefix: str | None, obs_path: str | None,
+                         choices: list[dict], declared: str | None = None,
+                         chosen: str | None = None) -> str | None:
+    """The bundle a study is read with, from the bundles :func:`emulator_choices` offers.
+
+    In order: the caller's pick, when it is one of ``choices``; a declared path that is
+    itself a bundle; the conventional bundle (where this app's training writes), when it
+    is on offer; else the first choice, the safest. The Results view, the Emulator panel,
+    emulator runs and the live prediction all ask this, so they read the same bundle.
+    """
+    picked = emulator_choice_named(choices, chosen)
+    if picked:
+        return picked
+    if declared and emulator_metadata(declared) is not None:
+        return declared
+    if file_prefix:
+        conventional = emulator_choice_named(
+            choices, emulator_dir(output_dir, file_prefix, obs_path))
+        if conventional:
+            return conventional
+    if choices:
+        return choices[0]["dir"]
+    return find_emulator_dir(output_dir, file_prefix, obs_path)
 
 
 def emulator_error_points(emu_dir: str) -> dict | None:
@@ -643,6 +1305,9 @@ def emulator_metadata(emu_dir: str) -> dict | None:
     return {
         "dir": emu_dir,
         "feature_labels": meta.get("feature_labels") or [],
+        # The prediction features (emulator_settings.include_prediction_items), which
+        # come last in feature_labels; absent on a bundle trained without them.
+        "prediction_feature_labels": meta.get("prediction_feature_labels") or [],
         "feature_r2": meta.get("feature_r2") or [],
         "feature_rmse": meta.get("feature_rmse") or [],
         "worst_r2": worst,
@@ -687,8 +1352,8 @@ def _chain_samples(output_dir: str):
     """
     import numpy as np  # noqa: PLC0415
 
-    run_dir = find_run_dir(output_dir) or output_dir
-    chain_path = os.path.join(run_dir, "mcmc_chain.npy")
+    run_dir = uq_source_dir(output_dir)
+    chain_path = os.path.join(run_dir, MCMC_CHAIN_FILE)
     if not os.path.isfile(chain_path):
         return None, None
     try:
@@ -730,6 +1395,11 @@ def uq_distributions(output_dir: str) -> list | None:
         flat, qnames = _chain_samples(output_dir)
         if flat is None:
             return None
+    return _sample_marginals(flat, qnames)
+
+
+def _sample_marginals(flat, qnames) -> list:
+    import numpy as np  # noqa: PLC0415
 
     out = []
     for i, qname in enumerate(qnames):
@@ -748,6 +1418,241 @@ def uq_distributions(output_dir: str) -> list | None:
             "q05": q05,
             "q50": q50,
             "q95": q95,
+            "bins": [float(x) for x in edges],
+            "counts": [int(x) for x in counts],
+        })
+    return out
+
+
+#: What a calibration workflow writes into each step's directory.
+STEP_RESULT_FILE = "step_result.json"
+#: CA's stored distribution (``calibration_workflow.distributions``): the samples and the
+#: manifest naming their parameters.
+DISTRIBUTION_MANIFEST = "distribution.json"
+DISTRIBUTION_SAMPLES = "samples.npy"
+
+
+def step_result(step_dir: str) -> dict | None:
+    """A workflow step's ``step_result.json``, or None when the step has not finished."""
+    found = _json(step_dir, STEP_RESULT_FILE) if step_dir else None
+    return found if isinstance(found, dict) else None
+
+
+def step_figures(step_dir: str) -> list[str]:
+    """The files a workflow figure step drew (its ``step_result.json``'s ``figures``), as
+    paths relative to ``step_dir``, for those still there. CA records absolute paths, so a
+    run directory moved or opened from a copy is read where it is now: each path is taken
+    relative to the step directory CA wrote it in (``figure_dir``'s parent)."""
+    result = step_result(step_dir) or {}
+    written_in = os.path.dirname(str(result.get("figure_dir") or ""))
+    out = []
+    for path in result.get("figures") or []:
+        rel = os.path.relpath(str(path), written_in) if written_in else ""
+        if rel and not rel.startswith(os.pardir) and not os.path.isabs(rel) \
+                and os.path.isfile(os.path.join(step_dir, rel)):
+            out.append(rel.replace(os.sep, "/"))
+    return out
+
+
+def stored_distribution(directory: str) -> list | None:
+    """The marginals (:func:`uq_distributions`' shape) of a distribution a workflow step
+    stored (``<step>/distribution/``: an MCMC chain after CA's burn-in, or a Laplace
+    approximation's draws), or None. Each parameter is named by its first target,
+    ``vessel/param``."""
+    import numpy as np  # noqa: PLC0415
+
+    manifest = _json(directory, DISTRIBUTION_MANIFEST) if directory else None
+    samples = _npy(directory, DISTRIBUTION_SAMPLES) if directory else None
+    if not isinstance(manifest, dict) or samples is None:
+        return None
+    names = []
+    for parameter in manifest.get("parameters") or []:
+        targets = parameter.get("targets") or []
+        names.append("/".join(str(t) for t in targets[0]) if targets else
+                     "parameter %d" % (len(names) + 1))
+    flat = np.asarray(samples, dtype=float)
+    flat = flat.reshape(-1, 1) if flat.ndim == 1 else flat
+    if flat.ndim != 2 or flat.shape[0] == 0 or flat.shape[1] != len(names):
+        return None
+    return _sample_marginals(flat, names)
+
+
+def step_uq_marginals(result: dict | None) -> list | None:
+    """A workflow uq step's posterior, from its ``step_result.json``: a Laplace
+    approximation's normal marginals (``laplace``: mean, covariance, CA's std), or an MCMC's
+    stored distribution (``distribution_dir``: the chain after CA's burn-in). None when it
+    has neither."""
+    result = result or {}
+    laplace = result.get("laplace") or {}
+    if laplace.get("mean") is not None and laplace.get("covariance") is not None:
+        return laplace_marginals(laplace["mean"], laplace["covariance"],
+                                 result.get("parameters"), laplace.get("std"))
+    return stored_distribution(result.get("distribution_dir") or "")
+
+
+def stored_sample_count(directory: str) -> int | None:
+    """How many draws a stored distribution (``<step>/distribution/samples.npy``) holds, or
+    None when it has none."""
+    samples = _npy(directory, DISTRIBUTION_SAMPLES) if directory else None
+    if samples is None or getattr(samples, "ndim", 0) == 0:
+        return None
+    return int(samples.shape[0])
+
+
+#: libcuflynx's posterior predictive check (``param_id.posterior_predictive``): the draws
+#: pushed through the model (``SAMPLES_FILE``), the coverage summary (``COVERAGE_FILE``) and
+#: the traces of a few draws (``SERIES_FILE``). A direct MCMC run saves them in its run dir,
+#: a direct Laplace run in its output dir, a workflow uq step in
+#: ``<step>/posterior_predictive`` (its ``step_result.json`` ``posterior_predictive_dir``).
+PREDICTIVE_FILE = "posterior_predictive.npz"
+PREDICTIVE_COVERAGE_FILE = "posterior_predictive_coverage.json"
+PREDICTIVE_SERIES_FILE = "posterior_predictive_series.npz"
+
+
+def predictive_coverage(directory: str | None) -> dict | None:
+    """The coverage summary of the posterior predictive check saved in ``directory``."""
+    found = _json(directory, PREDICTIVE_COVERAGE_FILE) if directory else None
+    return found if isinstance(found, dict) else None
+
+
+def step_predictive_dir(result: dict | None) -> str | None:
+    """Where a workflow uq step saved its posterior predictive check, or None (none run,
+    or it failed: see :func:`step_predictive_error`)."""
+    directory = (result or {}).get("posterior_predictive_dir")
+    return directory if directory and os.path.isdir(directory) else None
+
+
+def step_predictive_error(result: dict | None) -> str | None:
+    """Why a workflow uq step's posterior predictive check failed, or None."""
+    summary = (result or {}).get("posterior_predictive_summary")
+    return str(summary["error"]) if isinstance(summary, dict) and summary.get("error") else None
+
+
+def posterior_predictive_band(directory: str | None, coverage: dict | None = None) -> dict:
+    """The posterior predictive check saved in ``directory``, for plotting: per observable,
+    the 2.5 / 50 / 97.5 percentiles of the draws' predictions, in units of the measurement's
+    standard deviation from the measured value (so observables on different scales share
+    one axis). ``{"available": False, ...}`` when there is none, or it cannot be read."""
+    import numpy as np  # noqa: PLC0415
+
+    path = os.path.join(directory or "", PREDICTIVE_FILE)
+    if not directory or not os.path.isfile(path):
+        return {"available": False, "coverage": coverage}
+    try:
+        with np.load(path, allow_pickle=True) as data:
+            preds = np.asarray(data["predictions"], dtype=float)
+            truth = np.asarray(data["ground_truth"], dtype=float)
+            std = np.asarray(data["std"], dtype=float)
+            labels = [str(x) for x in data["labels"]]
+    except Exception as exc:  # noqa: BLE001
+        # numpy's failure modes for a damaged .npz are varied -- OSError, ValueError,
+        # KeyError and UnpicklingError have all been seen -- and a file that cannot be
+        # read is a missing figure, not a 500.
+        return {"available": False, "error": str(exc), "coverage": coverage}
+
+    keep = ~np.all(np.isnan(preds), axis=0)
+    idx = np.where(keep)[0]
+    if idx.size == 0:
+        return {"available": False, "coverage": coverage}
+    # A zero std would divide the whole observable away; leave those in real units.
+    scale = np.where(np.abs(std[idx]) > 0, np.abs(std[idx]), 1.0)
+    centred = lambda values: ((values - truth[idx]) / scale).tolist()  # noqa: E731
+    return {
+        "available": True,
+        "coverage": coverage,
+        "labels": [labels[i] for i in idx],
+        "lo": centred(np.nanpercentile(preds[:, idx], 2.5, axis=0)),
+        "median": centred(np.nanmedian(preds[:, idx], axis=0)),
+        "hi": centred(np.nanpercentile(preds[:, idx], 97.5, axis=0)),
+        "num_samples": int(preds.shape[0]),
+        "units": "measurement standard deviations from the measured value",
+    }
+
+
+#: The Laplace approximation CA's identifiability analysis writes (a workflow's
+#: identifiability step: ``<step dir>/<prefix>_laplace_{mean,covariance}.npy``).
+LAPLACE_MEAN_SUFFIX = "_laplace_mean.npy"
+LAPLACE_COVARIANCE_SUFFIX = "_laplace_covariance.npy"
+#: The z-scores of the 5th and 95th percentiles of a normal distribution.
+_Z95 = 1.6448536269514722
+#: What a Laplace marginal says in place of a std it does not have: the covariance (the
+#: inverse Hessian of the cost) is not positive definite along that parameter, so the data
+#: do not pin it down. CA stores that std as NaN.
+NOT_IDENTIFIABLE = "not identifiable (covariance not positive definite)"
+
+
+def laplace_distributions(mean_path: str, covariance_path: str,
+                          names: list | None = None) -> list | None:
+    """The Laplace posterior (a normal distribution about ``mean`` with ``covariance``) in
+    the shape :func:`uq_distributions` returns, or None when either file is missing or
+    unreadable.
+
+    Each parameter's marginal, ``{qname, mean, std, q05, q50, q95, bins, counts}``, with the
+    density binned over mean +- 4 std (counts per 100000 draws, from the normal density
+    rather than a sample, so the same files always give the same plot). ``names`` labels
+    the parameters in the files' order; missing names are numbered.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    if not (os.path.isfile(mean_path) and os.path.isfile(covariance_path)):
+        return None
+    try:
+        mean = np.load(mean_path, allow_pickle=False)
+        cov = np.load(covariance_path, allow_pickle=False)
+    except Exception:  # noqa: BLE001 - a reader must never fail a finished run
+        return None
+    return laplace_marginals(mean, cov, names)
+
+
+def laplace_marginals(mean, covariance, names: list | None = None,
+                      std: list | None = None) -> list | None:
+    """:func:`laplace_distributions` of a mean and covariance given as arrays (a workflow uq
+    step's ``step_result.json`` ``laplace``), or None when their shapes disagree.
+
+    A parameter whose variance is not a positive finite number, or whose ``std`` (CA's, when
+    given) is NaN, has no normal marginal: its entry keeps ``qname`` and ``mean`` (and
+    ``q50``), has ``std``, ``q05`` and ``q95`` None and no bins, and says why under
+    ``not_identifiable`` -- never a std of 0, which would read as perfectly determined.
+    """
+    import math  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+
+    try:
+        mean = np.atleast_1d(np.asarray(mean, dtype=float))
+        cov = np.atleast_2d(np.asarray(covariance, dtype=float))
+    except (TypeError, ValueError):
+        return None
+    if cov.shape != (mean.size, mean.size):
+        return None
+    names = list(names or [])
+    given_std = list(std) if std is not None else []
+    out = []
+    for i, mu in enumerate(mean):
+        qname = names[i] if i < len(names) else "parameter %d" % (i + 1)
+        variance = float(cov[i, i])
+        reported = given_std[i] if i < len(given_std) else 0.0
+        reported = float("nan") if reported is None else float(reported)
+        if not (math.isfinite(variance) and variance > 0) or math.isnan(reported):
+            out.append({"qname": qname, "mean": float(mu), "std": None, "q05": None,
+                        "q50": float(mu), "q95": None, "bins": [], "counts": [],
+                        "not_identifiable": NOT_IDENTIFIABLE})
+            continue
+        std = math.sqrt(variance)
+        if std > 0:
+            edges = np.linspace(mu - 4 * std, mu + 4 * std, NUM_BINS + 1)
+            cdf = np.array([0.5 * (1 + math.erf((e - mu) / (std * math.sqrt(2))))
+                            for e in edges])
+            counts = np.rint(np.diff(cdf) * 100000).astype(int)
+        else:
+            edges, counts = np.array([mu, mu]), np.array([100000])
+        out.append({
+            "qname": qname,
+            "mean": float(mu),
+            "std": std,
+            "q05": float(mu - _Z95 * std),
+            "q50": float(mu),
+            "q95": float(mu + _Z95 * std),
             "bins": [float(x) for x in edges],
             "counts": [int(x) for x in counts],
         })
@@ -856,7 +1761,7 @@ def clear_run_history(output_dir: str) -> bool:
     old one, or show an old one's plots.
 
     **CA owns the file list; CUFLynx owns the scope.** CA's clearer locates *one*
-    run directory and clears that, which is not enough here: an outputs directory
+    run directory and clears that, which is not enough here: a working dir
     reused across methods accumulates a ``<case_type>_<prefix>`` subdir per run,
     and clearing only the newest leaves the reader free to fall back to an older
     one and serve its history as this run's. That is exactly the stale-plot bug

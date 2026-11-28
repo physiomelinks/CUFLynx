@@ -954,6 +954,157 @@ def test_the_chosen_interpreter_is_probed_even_with_no_ca_directory(monkeypatch,
 
 
 # ---------------------------------------------------------------------------
+# Choosing between several emulators trained on one design
+# ---------------------------------------------------------------------------
+def _family(directory, model_name, r2, samples=True):
+    """A bundle that reports a family and a set of held-out scores."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "emulator_metadata.json").write_text(json.dumps({
+        "model_name": model_name,
+        "feature_r2": r2,
+        "feature_labels": [f"f{i}" for i in range(len(r2))],
+        "design": {"num_used": 12000, "num_stages": 3},
+    }))
+    if samples:
+        (directory / "training_data.npz").write_bytes(b"not really an npz")
+    return str(directory)
+
+
+def test_a_directory_of_bundles_enumerates_them(tmp_path):
+    """A study that fits one design with several families keeps them side by side."""
+    import ca_run_history
+
+    root = tmp_path / "emulators"
+    _family(root / "s_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.9])
+    _family(root / "s_two_phase_MLP", "two_phase_MLP", [0.8])
+
+    found = [Path(p).name for p in ca_run_history.emulator_bundles(str(root))]
+    assert sorted(found) == ["s_two_phase_MLP", "s_two_phase_RBF"]
+
+
+def test_a_bundle_names_only_itself(tmp_path):
+    """The container shape must not swallow the one-bundle case it also has to serve."""
+    import ca_run_history
+
+    bundle = _family(tmp_path / "emu", "two_phase_MLP", [0.7])
+    assert ca_run_history.emulator_bundles(bundle) == [bundle]
+
+
+def test_bundles_of_a_missing_directory_is_empty_not_an_error(tmp_path):
+    import ca_run_history
+
+    assert ca_run_history.emulator_bundles(str(tmp_path / "nope")) == []
+
+
+def test_a_summary_carries_what_a_chooser_needs(tmp_path):
+    import ca_run_history
+
+    bundle = _family(tmp_path / "emu", "two_phase_MLP", [0.5, 0.9, 0.7])
+    row = ca_run_history.emulator_summary(bundle)
+    assert row["model_name"] == "two_phase_MLP"
+    assert row["worst_r2"] == 0.5
+    assert row["median_r2"] == 0.7
+    assert row["num_features"] == 3
+    assert row["num_samples"] == 12000
+    assert row["reusable"] is True
+
+
+def test_choices_are_ordered_by_the_worst_feature(tmp_path):
+    """Worst-first, because that is the number that bounds what a bundle can be
+    trusted for -- an emulator misleads a calibration where it is weakest."""
+    import ca_run_history
+
+    root = tmp_path / "emulators"
+    _family(root / "s_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.30, 0.95])
+    _family(root / "s_two_phase_MLP", "two_phase_MLP", [0.28, 0.99])
+    _family(root / "s_two_phase_RandomForest", "two_phase_RandomForest", [0.21, 0.85])
+
+    rows = ca_run_history.emulator_choices(str(tmp_path), "s", None,
+                                           declared=str(root))
+    assert [r["model_name"] for r in rows] == [
+        "two_phase_RadialBasisFunctions", "two_phase_MLP", "two_phase_RandomForest",
+    ]
+
+
+def test_choices_without_a_declaration_still_find_the_conventional_bundle(tmp_path):
+    """The list can never omit the bundle the old search would have chosen."""
+    import ca_run_history
+
+    conventional = ca_run_history.emulator_dir(str(tmp_path), "model", None)
+    _family(Path(conventional), "two_phase_MLP", [0.6])
+
+    rows = ca_run_history.emulator_choices(str(tmp_path), "model", None)
+    assert [Path(r["dir"]).name for r in rows] == [Path(conventional).name]
+
+
+def test_a_bundle_whose_scores_cannot_be_read_sorts_last_not_worst(tmp_path):
+    """Unknown is not the same as known-bad, and must not be ranked as though it were."""
+    import ca_run_history
+
+    root = tmp_path / "emulators"
+    _family(root / "s_scored", "two_phase_MLP", [-5.0])
+    _family(root / "s_unscored", "two_phase_RandomForest", [])
+
+    rows = ca_run_history.emulator_choices(str(tmp_path), "s", None, declared=str(root))
+    assert rows[0]["model_name"] == "two_phase_MLP"
+    assert rows[-1]["worst_r2"] is None
+
+
+def test_a_directory_name_can_disagree_with_the_reported_family(tmp_path):
+    """A refit that died after its metadata was copied in looks exactly like this.
+
+    CUFLynx does not repair it -- it cannot know which is right -- but the summary
+    must carry both, because the name alone and the family alone each read as a
+    healthy bundle and only the pair shows the problem.
+    """
+    import ca_run_history
+
+    bundle = _family(tmp_path / "s_two_phase_MLP", "two_phase_RadialBasisFunctions", [0.4])
+    row = ca_run_history.emulator_summary(bundle)
+    assert row["name"] == "s_two_phase_MLP"
+    assert row["model_name"] == "two_phase_RadialBasisFunctions"
+
+
+def test_a_chosen_emulator_must_be_one_that_was_offered(tmp_path):
+    """The panel has no free-text path, and the chooser must not become one.
+
+    Deriving the location on both sides is what stops training writing to one
+    directory and a later run reading from another. A choice constrained to the
+    discovered set keeps that property; a choice taken at its word would hand the
+    caller an arbitrary path to read a bundle out of.
+    """
+    import main
+
+    offered = _family(tmp_path / "emulators" / "s_two_phase_MLP", "two_phase_MLP", [0.7])
+    choices = [{"dir": offered}]
+
+    assert main._chosen_emulator_dir({"emulator_dir": offered}, choices) == offered
+    assert main._chosen_emulator_dir({"emulator_dir": "/etc"}, choices) is None
+    assert main._chosen_emulator_dir({"emulator_dir": ""}, choices) is None
+    assert main._chosen_emulator_dir({}, choices) is None
+
+
+def test_a_manifest_may_declare_the_container_rather_than_one_bundle(tmp_path):
+    """Naming one of several would tell a reader the others are not this study's."""
+    import json as _json
+
+    import load_outputs
+
+    root = tmp_path / "study"
+    emulators = root / "emulators"
+    _family(emulators / "s_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.30])
+    _family(emulators / "s_two_phase_MLP", "two_phase_MLP", [0.28])
+    (root / "cuflynx_study.json").write_text(_json.dumps({
+        "schema": 1, "file_prefix": "s", "emulator": "emulators",
+    }))
+
+    result = load_outputs.load_outputs(str(root))
+    names = sorted(Path(row["dir"]).name for row in result["emulator"]["choices"])
+    assert names == ["s_two_phase_MLP", "s_two_phase_RBF"]
+    # Best-first, so the default is the safest rather than the most recent.
+    assert Path(result["emulator"]["dir"]).name == "s_two_phase_RBF"
+
+# ---------------------------------------------------------------------------
 # End to end: train one, then use it
 #
 # Everything above tests the wiring around an emulator -- where its directory is,
@@ -1111,3 +1262,48 @@ def test_training_runs_across_ranks_when_asked_for_more_than_one(
         f"a {PARALLEL_CORES}-rank training ended {state.get('state')}:\n{log[-3000:]}")
     assert "MPI_ABORT" not in log, f"a rank aborted:\n{log[-3000:]}"
     _assert_parallelism(recorded_commands, PARALLEL_CORES)
+
+
+def test_results_and_the_emulator_panel_default_to_the_same_bundle(client, tmp_path):
+    """Two bundles under emulators/ and no pick: the Results view (load_outputs) and the
+    Emulator panel, runs and cost (_emulator_dir_for, via /api/emulator/info) read the
+    same one, the safest. The panel used to take the newest."""
+    import os
+    import load_outputs
+    from conftest import BG_MODEL_PATH
+
+    with open(BG_MODEL_PATH, "rb") as fh:
+        model_id = client.post(
+            "/api/models/upload", files={"file": (BG_MODEL_PATH.name, fh, "application/xml")}
+        ).json()["model_id"]
+
+    root = tmp_path / "emulators"
+    safe = _family(root / "x_two_phase_RBF", "two_phase_RadialBasisFunctions", [0.9, 0.95])
+    risky = _family(root / "x_two_phase_RandomForest", "two_phase_RandomForest", [0.6, 0.99])
+    os.utime(safe, (1_000_000, 1_000_000))  # the safer bundle was written first
+
+    info = client.get("/api/emulator/info", params={
+        "model_id": model_id, "config_outputs_dir": str(tmp_path)}).json()
+    loaded = load_outputs.load_outputs(str(tmp_path))["emulator"]
+
+    assert os.path.abspath(loaded["dir"]) == os.path.abspath(safe)
+    assert os.path.abspath(info["emulator_dir"]) == os.path.abspath(safe)
+    assert info["chosen"] is False
+
+    picked = client.get("/api/emulator/info", params={
+        "model_id": model_id, "config_outputs_dir": str(tmp_path),
+        "emulator_dir": risky}).json()
+    assert os.path.abspath(picked["emulator_dir"]) == os.path.abspath(risky)
+    assert picked["chosen"] is True
+
+
+def test_the_conventional_bundle_is_the_default_over_a_safer_one(tmp_path):
+    """The bundle this app's training writes is the one it reads, even beside a safer one."""
+    import ca_run_history
+
+    conventional = _family(Path(ca_run_history.emulator_dir(str(tmp_path), "m", None)),
+                           "two_phase_MLP", [0.5])
+    _family(tmp_path / "emulators" / "m_other", "two_phase_RadialBasisFunctions", [0.9])
+    choices = ca_run_history.emulator_choices(str(tmp_path), "m", None)
+    assert len(choices) == 2 and choices[0]["dir"] != conventional
+    assert ca_run_history.default_emulator_dir(str(tmp_path), "m", None, choices) == conventional

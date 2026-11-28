@@ -1,0 +1,538 @@
+<script setup>
+/**
+ * The Workflow view, dropped down over the centre column from the Workflow bar.
+ *
+ * Its header picks which of the working dir's workflows is open, starts a new one, and
+ * opens a workflow file or run from elsewhere (WorkflowPanel's controls). Below, the open
+ * workflow as a chart (WorkflowDiagram): click a step to change its settings in its panel
+ * on the left, double-click it to inspect it (WorkflowStepDetail), drag it to move it,
+ * delete it. "New step" puts a new box on the chart, to place and draw arrows to; the next
+ * run, of whatever kind, makes it a step of that kind. Arrows are drawn from a box's handle
+ * and changed by double-clicking them (WorkflowLinkEditor).
+ *
+ * Every other prop and event is WorkflowPanel's (run, export, provenance, ...), passed
+ * through.
+ */
+import Button from 'primevue/button'
+import Message from 'primevue/message'
+import Select from 'primevue/select'
+import { computed, ref } from 'vue'
+import WorkflowDiagram from './WorkflowDiagram.vue'
+import WorkflowPanel from './WorkflowPanel.vue'
+import WorkflowStepDetail from './WorkflowStepDetail.vue'
+import WorkflowEdgeDetail from './WorkflowEdgeDetail.vue'
+import WorkflowLinkEditor from './WorkflowLinkEditor.vue'
+import WorkflowStepPrep from './WorkflowStepPrep.vue'
+import WorkflowSetValuesForm from './WorkflowSetValuesForm.vue'
+import WorkflowCombineForm from './WorkflowCombineForm.vue'
+import WorkflowFigureForm from './WorkflowFigureForm.vue'
+import WorkflowChooseParamsForm from './WorkflowChooseParamsForm.vue'
+import WorkflowDraftChoice from './WorkflowDraftChoice.vue'
+import { modelShort } from '../lib/workflowTarget'
+
+defineOptions({ inheritAttrs: false })
+
+const props = defineProps({
+  // The working dir's workflows ({path, name, steps, modified}).
+  workflows: { type: Array, default: () => [] },
+  // The open workflow's file, or null.
+  openPath: { type: String, default: null },
+  // The mode the next run follows (useWorkflow.target).
+  target: { type: Object, default: () => ({ mode: 'default' }) },
+  // The open workflow's steps as its file has them.
+  steps: { type: Array, default: () => [] },
+  // Each step's words from the tabs (workflowTabs), by id.
+  details: { type: Object, default: () => ({}) },
+  states: { type: Object, default: () => ({}) },
+  // CA's status of each step ({best_cost, duration_s, ...}), by id.
+  results: { type: Object, default: () => ({}) },
+  // The workflow's target model (the file's `target`).
+  workflowTarget: { type: Object, default: null },
+  // The workflow's external figures (`external_figures`).
+  figures: { type: Array, default: () => [] },
+  // Where the model's values come from (describe's value_origins).
+  origins: { type: Object, default: null },
+  // Renames a step: async (step, to) => '' when done, else why not.
+  renameStep: { type: Function, default: null },
+  // The chart as arranged (describe's layout), what an arrow can be (link_kinds), and
+  // whether a fixed arrow can name its parameters.
+  layout: { type: Object, default: null },
+  linkKinds: { type: Object, default: () => ({}) },
+  fixedParameters: { type: Boolean, default: false },
+  // The chart's edits (useWorkflow): {link, unlink, place, placeMany, addDraft, makeSweep,
+  // makeFigure, chooseDraft, deleteDraft, ...}, each async; '' when done, else why not
+  // (addDraft: the id); figureFunctions: what a figure box can draw.
+  editor: { type: Object, default: null },
+  // The model's constants (component/name), offered when setting values by hand.
+  parametersOffered: { type: Array, default: () => [] },
+  // The Simulation box waiting for its obs_data, or null; whether the study has one.
+  simulationDraft: { type: String, default: null },
+  studyHasObs: { type: Boolean, default: false },
+  // The Choose parameters box waiting for the study's params_for_id, or null; whether the
+  // study has one; whether this CA has a reduction chosen by hand (CA #686).
+  reductionDraft: { type: String, default: null },
+  studyHasParams: { type: Boolean, default: false },
+  manualReduction: { type: Boolean, default: false },
+  // CA's step kinds (describe's step_kinds), and the left-hand tabs that make steps.
+  stepKinds: { type: Array, default: () => [] },
+  draftPanels: { type: Array, default: () => [] },
+  // The step the next run of the open panel changes (modeSummary), or null.
+  editing: { type: String, default: null },
+  // A delete waiting for a confirmation ({step, deleted, rewired, dropped}), or null.
+  pendingDelete: { type: Object, default: null },
+  busy: { type: Boolean, default: false },
+  running: { type: Boolean, default: false },
+})
+const emit = defineEmits([
+  'open-workflow',
+  'new-workflow',
+  'new-step',
+  'select-step',
+  'delete-step',
+  'confirm-delete',
+  'cancel-delete',
+  'move-step',
+  // a step's model, opened as the current study (the bar's tab does the same)
+  'open-step-view',
+  // a model box's choice: {draft, model, panel} (that tab opens) or {draft, model,
+  // simulation: true}: its model as the study, alone, asking for its obs_data
+  'draft-action',
+  // the waiting simulation was made (or put off: true)
+  'simulation-made',
+  // the waiting Choose parameters box was made (or put off: true)
+  'reduction-made',
+])
+
+// The step being inspected (a double-click in the chart), or null.
+const inspected = ref(null)
+const inspectedStep = computed(() => props.steps.find((s) => s.id === inspected.value) ?? null)
+// The clicked arrow ({source, target, key, files}) or external figure, or null.
+const clickedEdge = ref(null)
+const clickedFigure = ref(null)
+// The clicked box of values by origin, by id, so it is read again from `origins` after an
+// edit moves a value out of it (an empty box keeps its title while open).
+const clickedOrigin = ref(null)
+const openOrigin = computed(() => {
+  if (!clickedOrigin.value) return null
+  const { id, title, mark } = clickedOrigin.value
+  return (props.origins?.boxes ?? []).find((b) => b.id === id) ?? { id, title, mark, values: [] }
+})
+function onOrigin(id) {
+  const box = (props.origins?.boxes ?? []).find((b) => b.id === id)
+  clickedOrigin.value = box ? { id, title: box.title, mark: box.mark } : null
+}
+
+// An arrow being drawn or changed ({source, target, key, pending}), and why an edit of the
+// chart was refused.
+const editedArrow = ref(null)
+const editError = ref('')
+// what a chart edit did that it would not show by itself (a move that pushed other boxes on)
+const editNotice = ref('')
+const draftIds = computed(() => (props.layout?.drafts ?? []).map((d) => d.id))
+const chartSteps = computed(() => [...props.steps,
+  ...(props.layout?.drafts ?? []).map((d) => ({ id: d.id, draft: true, on_target: !!d.on_target }))])
+/** A Simulation box (a model box's choice, or a new step after the target): its model as the
+ * study, alone, and Imports asking for its obs_data, whose protocol says what varies
+ * (params_to_change); Add simulation, below, then makes it. */
+function simulate(d) {
+  emit('draft-action', { draft: d.id, model: d.model ?? null, simulation: true })
+}
+async function addSimulation() {
+  const why = props.editor ? await props.editor.makeSweep({ draft: props.simulationDraft })
+    : 'editing is not available'
+  if (why) editError.value = why
+  else emit('simulation-made')
+}
+
+function onConnect({ source, target }) {
+  clickedEdge.value = null
+  editedArrow.value = { source, target }
+}
+function onEditEdge({ source, target }) {
+  clickedEdge.value = null
+  editedArrow.value = { source, target }
+}
+async function onEdit(action, ...args) {
+  editError.value = props.editor ? await props.editor[action](...args) : 'editing is not available'
+}
+
+// The step prep box (New step), the model box whose choice is open, and the Set values by
+// hand box whose form is open.
+const prepOpen = ref(false)
+const choosing = ref(null)
+const setDraft = ref(null)
+// the Choose a parameter set by cost box whose form is open, and the steps drawn into it
+const combineDraft = ref(null)
+const combineInputs = computed(() => (props.layout?.links ?? [])
+  .filter((l) => l.target === combineDraft.value && l.key === 'combine_from').map((l) => l.source))
+// the Draw figures box whose form is open
+const figureDraft = ref(null)
+
+/** New step dropped on the chart: a box there (a new column in a gap, moving the boxes right
+ * of it on); after the target, a simulation, whose form opens. A model box or an action box
+ * from the step prep box carries its model or action. */
+async function onAddDraft({ col = null, row = null, shift = null, onTarget = false, model = null,
+  action = null }) {
+  if (!props.editor) return
+  editError.value = ''
+  const draft = await props.editor.addDraft(col, row, onTarget, model, action)
+  if (!draft) return
+  if (shift && Object.keys(shift).length) editError.value = await props.editor.placeMany(shift)
+  if (onTarget) simulate({ id: draft })
+  prepOpen.value = false
+}
+
+/** A new step clicked: a model box asks what it does; an action box opens its form; a
+ * plain new step is what the next run makes. */
+function onSelectDraft(id) {
+  const d = (props.layout?.drafts ?? []).find((x) => x.id === id)
+  if (!d) return
+  if (d.model) choosing.value = d
+  else if (d.action === 'set') setDraft.value = id
+  else if (d.action === 'combine') combineDraft.value = id
+  else if (d.action === 'figure') figureDraft.value = id
+  else props.editor?.chooseDraft(id)
+}
+
+// the Choose parameters form, open on the waiting box
+const choosingParams = ref(null)
+function onParamsChosen() {
+  choosingParams.value = null
+  emit('reduction-made')
+}
+
+function onChoose({ panel, simulation, chooseParams }) {
+  const d = choosing.value
+  choosing.value = null
+  if (!d) return
+  if (chooseParams) emit('draft-action', { draft: d.id, model: d.model ?? null, chooseParams: true })
+  else if (simulation) simulate(d)
+  else emit('draft-action', { draft: d.id, model: d.model, panel })
+}
+
+/** "New step" dragged from its button onto the chart. */
+function onNewStepDragStart(event) {
+  event.dataTransfer.setData('application/x-cuflynx-new-step', 'new')
+  event.dataTransfer.effectAllowed = 'copy'
+}
+
+/** Rename the inspected step; the dialog stays on it under its new name. */
+async function onRename(step, to) {
+  const why = props.renameStep ? await props.renameStep(step, to) : 'renaming is not available'
+  if (!why) inspected.value = to.trim()
+  return why
+}
+
+function fromDetail(event, id) {
+  inspected.value = null
+  emit(event, id)
+}
+
+const options = computed(() => {
+  const listed = props.workflows.map((w) => ({
+    value: w.path,
+    label: `${w.name} (${w.steps.length} step${w.steps.length === 1 ? '' : 's'})`,
+  }))
+  if (props.openPath && !listed.some((o) => o.value === props.openPath)) {
+    listed.unshift({ value: props.openPath, label: props.openPath.split(/[\\/]/).slice(-2).join('/') })
+  }
+  return listed
+})
+
+const doomed = computed(() => props.pendingDelete?.deleted ?? [])
+const alsoDeleted = computed(() => doomed.value.filter((s) => s !== props.pendingDelete?.step))
+</script>
+
+<template>
+  <div class="workflow-view" data-testid="workflow-view-pane">
+    <WorkflowPanel v-bind="$attrs" :busy="busy">
+      <template #header>
+        <div class="wv-pick">
+          <Select
+            v-if="options.length"
+            :model-value="openPath"
+            :options="options"
+            option-label="label"
+            option-value="value"
+            size="small"
+            placeholder="Workflows in the working dir"
+            :disabled="busy || running"
+            data-testid="workflow-pick"
+            @update:model-value="(p) => p && p !== openPath && emit('open-workflow', p)"
+          />
+          <Button
+            label="New workflow"
+            icon="pi pi-plus"
+            size="small"
+            :outlined="target.mode !== 'new_workflow'"
+            :disabled="running"
+            title="The next run from a panel starts a new workflow of this model"
+            data-testid="workflow-new"
+            @click="emit('new-workflow')"
+          />
+        </div>
+      </template>
+      <template #steps>
+        <div class="wv-new-steps">
+          <Button
+            label="New step"
+            icon="pi pi-plus"
+            size="small"
+            :outlined="target.mode !== 'new_step'"
+            :disabled="running"
+            title="Click: choose a model box or an action box to drag onto the chart. Drag this button: a plain new step (after the target: a simulation)."
+            draggable="true"
+            class="wv-new-step"
+            data-testid="workflow-new-step"
+            @dragstart="onNewStepDragStart"
+            @click="prepOpen = !prepOpen"
+          />
+          <span class="wv-hint">
+            <template v-if="target.mode === 'new_step' && target.draft">
+              Waiting: whatever you run next (a calibration, an analysis, a surrogate) becomes
+              <strong>{{ target.draft }}</strong>, with the arrows drawn to it.
+            </template>
+            <template v-else-if="target.mode === 'new_step'">
+              Waiting: whatever you run next (a calibration, an analysis, a surrogate) is added
+              as a new step.
+            </template>
+            <template v-else>
+              A run changes the step of its kind already here; New step adds one instead.
+            </template>
+          </span>
+        </div>
+        <WorkflowStepPrep
+          v-if="prepOpen"
+          :workflow="$attrs.described?.workflow ?? null"
+          :step-kinds="stepKinds"
+          @place="(box) => onAddDraft(box)"
+          @close="prepOpen = false"
+        />
+        <Message
+          v-if="pendingDelete"
+          severity="warn"
+          :closable="false"
+          data-testid="workflow-confirm-delete"
+        >
+          Deleting <strong>{{ pendingDelete.step }}</strong> also deletes
+          {{ alsoDeleted.join(', ') }}:
+          {{ alsoDeleted.length === 1 ? 'it takes' : 'they take' }} from it, and nothing above
+          it is of a kind {{ alsoDeleted.length === 1 ? 'it' : 'they' }} could take from
+          instead. Results stay in the run directory.
+          <div class="wv-confirm">
+            <Button
+              label="Delete them"
+              size="small"
+              severity="danger"
+              data-testid="workflow-confirm-delete-yes"
+              @click="emit('confirm-delete')"
+            />
+            <Button
+              label="Keep them"
+              size="small"
+              text
+              data-testid="workflow-confirm-delete-no"
+              @click="emit('cancel-delete')"
+            />
+          </div>
+        </Message>
+        <Message
+          v-if="editError"
+          severity="error"
+          closable
+          data-testid="workflow-edit-error"
+          @close="editError = ''"
+        >
+          {{ editError }}
+        </Message>
+        <Message
+          v-if="simulationDraft"
+          severity="info"
+          :closable="false"
+          data-testid="workflow-simulation-waiting"
+        >
+          Simulation <strong>{{ simulationDraft }}</strong>: runs the model over its obs_data's
+          protocol; what varies is that protocol's <code>params_to_change</code> (edit it with the
+          obs_data's Edit). It records the variables the obs_data's items name.
+          <template v-if="!studyHasObs"> Give it an obs_data in Imports first.</template>
+          <div class="wv-confirm">
+            <Button
+              label="Add simulation"
+              size="small"
+              :disabled="!studyHasObs || busy || running"
+              data-testid="workflow-simulation-add"
+              @click="addSimulation"
+            />
+            <Button label="Not now" size="small" text @click="emit('simulation-made', true)" />
+          </div>
+        </Message>
+        <Message
+          v-if="reductionDraft"
+          severity="info"
+          :closable="false"
+          data-testid="workflow-reduction-waiting"
+        >
+          Choose parameters <strong>{{ reductionDraft }}</strong>: keeps the entries of the
+          study's params_for_id you tick, chosen by hand, for a calibration to take.
+          <template v-if="!studyHasParams"> Give it a params_for_id in Imports first.</template>
+          <div class="wv-confirm">
+            <Button
+              label="Choose parameters"
+              size="small"
+              :disabled="!studyHasParams || busy || running"
+              data-testid="workflow-reduction-choose"
+              @click="choosingParams = reductionDraft"
+            />
+            <Button label="Not now" size="small" text @click="emit('reduction-made', true)" />
+          </div>
+        </Message>
+        <Message
+          v-if="editNotice"
+          severity="info"
+          closable
+          data-testid="workflow-edit-notice"
+          @close="editNotice = ''"
+        >
+          {{ editNotice }}
+        </Message>
+        <WorkflowDiagram
+          :steps="steps"
+          :details="details"
+          :states="states"
+          :results="results"
+          :target="workflowTarget"
+          :figures="figures"
+          :active="clickedEdge"
+          :origins="origins"
+          :editing="editing"
+          :doomed="doomed"
+          :layout="layout"
+          :busy="busy || running"
+          @select="(id) => emit('select-step', id)"
+          @inspect="(id) => (inspected = id)"
+          @delete="(id) => emit('delete-step', id)"
+          @place="({ node, col, row }) => onEdit('place', node, col, row)"
+          @connect="onConnect"
+          @edit-edge="onEditEdge"
+          @select-draft="onSelectDraft"
+          @refused="(why) => (editError = why)"
+          @notice="(what) => (editNotice = what)"
+          @delete-draft="(id) => onEdit('deleteDraft', id)"
+          @place-many="(positions) => onEdit('placeMany', positions)"
+          @add-draft="onAddDraft"
+          @setup-sweep="(id) => simulate({ id })"
+          @open-target="emit('open-step-view', 'target')"
+          @edge="(e) => (clickedEdge = e)"
+          @figure="(id) => (clickedFigure = figures.find((f) => f.id === id) ?? null)"
+          @origin="onOrigin"
+        />
+        <WorkflowEdgeDetail
+          :edge="clickedEdge"
+          :figure="clickedFigure"
+          :origin="openOrigin"
+          :boxes="origins?.boxes ?? []"
+          :origin-kinds="origins?.editable && editor ? (origins.origins ?? []) : []"
+          :save-origin="(form) => editor ? editor.setValueOrigin(form) : Promise.resolve('editing is not available')"
+          @close="clickedEdge = null; clickedFigure = null; clickedOrigin = null"
+          @step="(id) => { clickedOrigin = null; emit('select-step', id) }"
+          @open-origin="onOrigin"
+        />
+        <WorkflowDraftChoice
+          :draft="choosing"
+          :panels="draftPanels"
+          :model-words="choosing ? modelShort(choosing.model) : ''"
+          :manual-reduction="manualReduction"
+          @choose="onChoose"
+          @close="choosing = null"
+        />
+        <WorkflowSetValuesForm
+          :draft="setDraft"
+          :parameters-offered="parametersOffered"
+          :save="(form) => editor ? editor.setValues(form) : Promise.resolve('editing is not available')"
+          :busy="busy || running"
+          @close="setDraft = null"
+        />
+        <WorkflowChooseParamsForm
+          :draft="choosingParams"
+          :load="() => editor ? editor.reductionCandidates() : Promise.reject(new Error('editing is not available'))"
+          :save="async (form) => { const why = editor ? await editor.chooseParameters(form) : 'editing is not available'; if (!why) onParamsChosen(); return why }"
+          :busy="busy || running"
+          @close="choosingParams = null"
+        />
+        <WorkflowCombineForm
+          :draft="combineDraft"
+          :inputs="combineInputs"
+          :save="(form) => editor ? editor.combine(form) : Promise.resolve('editing is not available')"
+          :busy="busy || running"
+          @close="combineDraft = null"
+        />
+        <WorkflowFigureForm
+          :draft="figureDraft"
+          :steps="steps"
+          :load="() => editor ? editor.figureFunctions() : Promise.reject(new Error('editing is not available'))"
+          :save="(form) => editor ? editor.makeFigure(form) : Promise.resolve('editing is not available')"
+          :busy="busy || running"
+          @close="figureDraft = null"
+        />
+        <WorkflowLinkEditor
+          :arrow="editedArrow"
+          :steps="chartSteps"
+          :details="details"
+          :link-kinds="linkKinds"
+          :pending-links="layout?.links ?? []"
+          :fixed-parameters="fixedParameters"
+          :save="(a) => editor ? editor.link(a) : Promise.resolve('editing is not available')"
+          :remove="(a) => editor ? editor.unlink(a) : Promise.resolve('editing is not available')"
+          :busy="busy || running"
+          @close="editedArrow = null"
+        />
+        <WorkflowStepDetail
+          :step="inspectedStep"
+          :steps="steps"
+          :detail="inspectedStep ? details[inspectedStep.id] : null"
+          :result="inspectedStep ? results[inspectedStep.id] : null"
+          :state="inspectedStep ? (states[inspectedStep.id] ?? 'not_run') : 'not_run'"
+          :busy="busy || running"
+          :rename="renameStep ? onRename : null"
+          @close="inspected = null"
+          @select="(id) => fromDetail('select-step', id)"
+          @open-view="(id) => fromDetail('open-step-view', id)"
+          @delete="(id) => fromDetail('delete-step', id)"
+        />
+      </template>
+    </WorkflowPanel>
+  </div>
+</template>
+
+<style scoped>
+.workflow-view {
+  padding: 0.5rem 0.75rem;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.wv-pick {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+.wv-new-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+  margin: 0.4rem 0 0.6rem;
+}
+.wv-new-step {
+  cursor: grab;
+}
+.wv-hint {
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+.wv-confirm {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+</style>

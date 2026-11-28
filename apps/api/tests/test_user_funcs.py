@@ -12,9 +12,11 @@ import shutil
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import user_funcs as uf
+from conftest import stored_input
 
 VALID_OP = (
     "def spread(x, series_output=False):\n"
@@ -202,7 +204,7 @@ def test_saves_under_output_directory(tmp_cfg, tmp_path):
     """With an output dir the func file lives there, not in the config dir."""
     out = tmp_path / "run_outputs"
     uf.save_user_func("operation", "spread", VALID_OP, base_dir=str(out))
-    path = out / "user_funcs" / "operation_funcs_user.py"
+    path = stored_input(out, "funcs", "operation_funcs_user.py")
     assert path.is_file()
     assert uf.external_path("operation", str(out)) == str(path)
     assert uf.external_paths(str(out)) == {"operation_funcs_external_path": str(path)}
@@ -379,7 +381,7 @@ def test_route_saves_under_output_dir(client, tmp_cfg, tmp_path):
         json={"name": "spread", "source": VALID_OP, "output_dir": str(out)},
     )
     assert resp.status_code == 200, resp.text
-    assert (out / "user_funcs" / "operation_funcs_user.py").is_file()
+    assert stored_input(out, "funcs", "operation_funcs_user.py").is_file()
     # Listing with the same output_dir returns it; the config-dir fallback is empty.
     resp = client.get("/api/operation_funcs", params={"output_dir": str(out)})
     assert [f["name"] for f in resp.json()["functions"]] == ["spread"]
@@ -606,3 +608,61 @@ def test_every_generated_header_imports_libcuflynx_only(tmp_cfg):
         modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         assert all(m.startswith("libcuflynx.") for m in modules), (kind, modules)
         assert not any(isinstance(n, ast.Try) for n in ast.walk(tree)), kind
+
+
+# ---------------------------------------------------------------------------
+# One file layout with libcuflynx's WorkflowBuilder
+# ---------------------------------------------------------------------------
+def half_time(pressure, series_output=False):
+    if series_output:
+        return pressure
+    return pressure[len(pressure) // 2]
+
+
+half_time.series_to_constant = True
+
+
+def spread(x, series_output=False):
+    if series_output:
+        return x
+    return float(np.max(x) - np.min(x))
+
+
+def _workflow_builder():
+    """libcuflynx's calibration_workflow.builder, or skip on a libcuflynx without it or
+    without utilities.user_funcs_file (CA #652)."""
+    import importlib
+
+    from ca_imports import ca_from, ensure_ca_path
+
+    ensure_ca_path()
+    try:
+        ca_from("utilities.user_funcs_file", "write_funcs_file")
+        # Namespaced only: no flat spelling of calibration_workflow exists.
+        return importlib.import_module("libcuflynx.calibration_workflow.builder")
+    except ImportError as exc:
+        pytest.skip(f"this libcuflynx has no WorkflowBuilder functions file (CA #652): {exc}")
+
+
+def test_the_operation_file_is_the_one_a_workflow_builder_writes(tmp_cfg, tmp_path):
+    """The funcs editor and a notebook's WorkflowBuilder.add_operation write the same file
+    for the same functions, so a workflow's operations open in CUFLynx and either can
+    rewrite the other's file."""
+    builder_mod = _workflow_builder()
+    read_funcs_file = builder_mod.read_funcs_file
+    wf = builder_mod.WorkflowBuilder(
+        "wf", builder_mod.module_array(str(tmp_path / "m_module_array.csv")),
+        directory=tmp_path / "wf")
+    wf.add_operation(half_time, spread)
+    expected = wf.funcs_source("operation")
+
+    # The functions as the builder wrote them, saved one by one through the editor.
+    builder_file = tmp_path / "builder_operation_funcs.py"
+    builder_file.write_text(expected, encoding="utf-8")
+    sources, imports = read_funcs_file(str(builder_file), "operation")
+    assert list(sources) == ["half_time", "spread"] and not imports
+    for source in sources.values():
+        uf.save_user_func("operation", None, source)
+
+    written = (tmp_cfg / "user_funcs" / "operation_funcs_user.py").read_text(encoding="utf-8")
+    assert written == expected

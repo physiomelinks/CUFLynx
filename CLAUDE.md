@@ -79,7 +79,7 @@ two in step. The exported `run_pipeline.py` is CA's own
 
 ## Key files
 
-- `apps/web/src/App.vue` — main UI (tabs: Parameters · Emulator · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
+- `apps/web/src/App.vue` — main UI (tabs: Parameters · Surrogate · Identifiability · Sensitivity · Calibration · UQ; center: Output plots · Progress · Analysis)
 - `apps/web/src/components/TourOverlay.vue` + `lib/tourSteps.js` — the **Tutorial**
   button's guided tour. **Every anchor is a `data-testid`** and nothing else:
   renaming one breaks a tour step silently in the app, which is why
@@ -116,20 +116,32 @@ two in step. The exported `run_pipeline.py` is CA's own
   **Every gradient source is computed by CA**, through the one backend-agnostic accessor `ParamID.get_observable_sensitivities(param_vals, gradient_method, fd_rel_step)` — FD (`fd_backend`), AD (`casadi_backend`) and FSA (`fsa_backend`) alike, so the runner builds the param-id engine for all three. CUFLynx reimplemented the FD loop and the CasADi jacobian until #210's follow-up; that is why it had to mirror CA's flatten/fold contract for grouped and modifier rows, and why CA #390 tightening that contract broke the AD path. **Do not reimplement a gradient here.** What `local_sensitivity.py` legitimately owns is only what CA does not answer: the nominal point, the *signed* relative coefficient (CA's is unsigned and 0.0 on a degenerate denominator), the `var^{e,s} [op]` labels shared with the Sobol heatmap, and the `CVODES`/`AUTO` alias resolution. Two traps: read the nominal features **before** the sensitivities (CA's CasADi arm leaves the helper in AD mode, so a later numeric evaluation returns an `SX`), and pass `rel_step` explicitly as `fd_rel_step` (CUFLynx defaults to 1e-2, CA to 1e-3 — up to 48% apart).
 - `apps/api/calibration.py` / `calibration_runner.py` — GA parameter identification; `CalibrationPanel.vue` (also emits live settings reused by local-sensitivity "run calibration first").
 - `apps/api/uq.py` / `uq_runner.py` — uncertainty quantification; `UQPanel.vue`.
+- **Identifiability tab** (`IAPanel.vue`, before Sensitivity) — two halves, both built from CA's descriptors (`GET /api/identifiability/defaults`). **Parameter reduction** (`ANALYSIS_OPTIONS['param_reduction']`) runs through `sensitivity_runner.py` in its own manager slot (`sensitivity.param_reduction`): after a Sobol run (`do_param_reduction`) or alone over an existing one (`reduce_only`, nothing simulated). Each option carries the `methods` that read it, from CA's `REDUCTIONS` registry, because CA refuses another method's option set to anything but its default. The report is CA's `param_reduction.json`, read by `ca_run_history.param_reduction` and found under the Sobol run (`find_param_reduction`), never located by a second copy of CA's default; "Calibrate these" adopts its `reduced_params_for_id.json` through `_save_params_file`. **Identifiability analysis** is the UQ runner's `laplace` method with `ia_options`; a profile-likelihood run reports CA's profiles (`ca_run_history.profile_likelihood`) instead of a posterior.
+- `apps/api/rom.py` / `rom_runner.py` — **reduced-order models (ROMs)**, the Surrogate tab's second section
+  (`RomSection.vue`, under the Emulator one). A ROM is described by a *rom setup* file (libcuflynx
+  `rom_setup.schema.json`) and built by libcuflynx's `cuflynx-rom setup` (`libcuflynx.rom.setup_cli`): the runner
+  calls its `main(argv)` and CUFLynx keeps no ROM logic. Quick calls (`probe`, `generators`, `check`, `describe`)
+  run the runner to completion (`rom.call`); `runs` and `fit` are jobs in their own slot. Results stay in
+  libcuflynx's layout under the output folder (`runs/`, `fits/`, `results.json`, read back by `rom.read_results`).
+  **`libcuflynx.rom` is not in the public release yet**: on a public libcuflynx `/api/rom/availability` answers
+  unavailable with the reason, and the section shows only that. Using ROMs means pointing Settings (CA dir or
+  interpreter) at a libcuflynx that has them. The runner imports `libcuflynx.rom.setup_cli` by its namespaced name
+  (`ca_imports.NAMESPACE`), not through `ca_import`: `rom` has no flat spelling, so it is not one of `CA_PACKAGES`.
 - `apps/api/emulator.py` / `emulator_runner.py` — trains a **surrogate** of the
   model's scalar observable features with CA's `EmulatorTrainer` (CA #333);
-  `EmulatorPanel.vue`, tab between Parameters and Sensitivity. Two independent
+  `EmulatorPanel.vue`, the Emulator section of the **Surrogate** tab (between
+  Parameters and Sensitivity; reduced-order models are its second section, below). Two independent
   controls, because emulation has two steps: **Train** fits one against the
   solver, and the **use** tick box (`useEmulator` store) makes sensitivity,
   calibration and UQ evaluate it instead. `solver:` keeps meaning the truth
   solver throughout, so an emulator run stays comparable with what it approximates.
 
   **The bundle outlives the session**, so nothing about it is remembered in
-  memory: `ca_run_history.emulator_dir()` derives the location from the outputs
-  directory by CA's own rule (`<outputs>/emulators/<prefix>_<obs_prefix>`) on
+  memory: `ca_run_history.emulator_dir()` derives the location from the working
+  dir by CA's own rule (`<working dir>/emulators/<prefix>_<obs_prefix>`) on
   *both* sides, and `emulator_metadata()` reads CA's `emulator_metadata.json`.
   One consequence worth keeping: an emulator trained by CA's own script into the
-  same outputs directory is usable from the GUI, and nothing has to be re-pointed.
+  same working dir is usable from the GUI, and nothing has to be re-pointed.
 
   `emulator_config.engine_kwargs()` is the one place "use the emulator" becomes
   CA engine kwargs; **all three** analysis runners call it (sensitivity twice
@@ -158,7 +170,126 @@ two in step. The exported `run_pipeline.py` is CA's own
   data_items **by CA's feature label**, including the `[exp e, sub s]` form CA
   uses when a label repeats, never by position.
 
-**Only circulatory_autogen writes to the user's outputs directory** (#210). A run
+**Calibration workflows** (`apps/api/workflow_manager.py` + `workflow_runner.py`,
+`WorkflowPanel.vue` / `WorkflowBar.vue` / `stores/useWorkflow.js`). A workflow
+file orders calibrations -- each step a model (a module array or a library module), an
+obs_data and a params_for_id -- merged into a target model, and **all of it is CA's**
+(`libcuflynx.calibration_workflow`, CA #555): the format and its checks, finding library
+modules (also in the **module libraries** set in Settings, `module_library_dirs`,
+persisted), how a step's names map into the target, the run, and the run directory --
+which holds the workflow it ran, so reopening that directory reopens the workflow.
+CUFLynx keeps which workflow is open, runs `workflow_runner.py` like the other
+runners (one job; refused while a calibration runs, and vice versa), and loads each
+tab through CA's `workflow_model` -> `import_omex_bytes`, so a step tab is an
+ordinary study. A step's `kind` (calibration, sensitivity, reduction, emulation,
+identifiability; CA #585) is shown in the step list with what it takes from where; a
+reduction has no model, so no tab. Neither has a `figure` step (CA #705): its arrows are its
+inputs (`input:<parameter>`, `figureInputs`), describe's status lists the files a done one drew
+(`ca_run_history.step_figures`, rebased onto the run dir), `/api/workflow/figure` serves only
+those, and Analysis shows them (`lib/workflowFigures.js`). A **Draw figures** action box makes one (`WorkflowFigureForm.vue`, `workflow_layout.figure_functions` / `make_figure`, `POST /api/workflow/figure_step`): a function of libcuflynx's standard figures (copied beside the workflow by its `write_standard_figures` when first named) or of a script under `figures/`, and per parameter a step and one of CA's `INPUT_KINDS` that step's kind gives; CA declares no kind per parameter, so the form only guesses one named like the parameter (or a one-input function), and the user picks the rest. `make_figure` runs CA's `check_script` too, which `parse_workflow` does not. A `simulate` step is shown like a sweep. The chart's boxes of where values come from cover every value of the target, each in one box by the origin its parameters file records, from CA's plan (`target_values`, `workflow_edges.parameter_origins`): a value a step calibrates stays in its origin's box, marked "calibrated in <step>", and one with none (or inherited) that a step calibrates is "to be calibrated"; a libcuflynx without `target_values` gives the provenance graph's boxes. **Export .omex** (`/api/workflow/export`) puts the
+target model and the workflow as CA's `pack_workflow` packs it under `workflow/` in an
+archive (no results), and a study sent from a workflow tab carries the pack too; an
+imported archive's `workflow/` is unpacked whole into the uploads dir and offered, so
+its relative paths resolve and it reruns from the archive alone. Two traps found
+building it:
+
+- **No app module may share a flat name with a CA module.** `ca_from` resolves
+  `libcuflynx.<name>` *and* `<name>`, and an app module already in `sys.modules`
+  wins -- the manager was first called `calibration_workflow.py` and was handed back
+  as CA's. A new CA top-level package also has to join `CA_PACKAGES` (and its two
+  mirrors, pinned by `test_ca_import_parity.py`) or its namespaced spelling is never tried.
+- **Give a runner an explicit `cwd`.** Myokit `chdir`s the whole server into a
+  temporary build directory while it compiles a live simulation, then deletes it; a
+  runner spawned in that window starts in a directory that no longer exists and dies
+  at its first compile with `[Errno 2] No such file or directory`. The workflow
+  runner runs in its run directory. (The other managers still inherit the server's.)
+
+**LaTeX symbols** (`apps/api/symbol_mapping.py`, `EditVariableMappingDialog.vue`, opened
+from the Variables panel). A study's `<prefix>_variable_mapping.csv` -- the symbol of every
+variable, which CA's `cuflynx-methods-latex` typesets the methods with -- is entirely CA's
+(`libcuflynx.reporting.variable_mapping`, CA #547): rows, default rule, keeping edits.
+CUFLynx only picks where the file lives: beside the target's parameters file for a
+workflow's target tab (CA's `workflow_mapping_path`, where the methods writer looks), else
+the version stored last in `<working dir>/inputs/variable_mapping/<stamp>/` (a save stores a new
+one; top level in an older folder), else the uploads directory. `reporting` is a CA
+package in `CA_PACKAGES` (and its two mirrors).
+
+**The working dir** (`apps/api/working_dir.py`, user docs `tutorials/docs/working_dir.md`)
+is the one folder a study lives in, inputs and outputs, so it can be zipped and opened
+elsewhere. The old name, "Outputs directory", survives only in the aliases below. Rules:
+
+- **Every input version lives in `<W>/inputs/<kind>/<yyyy-mm-dd_HHMMSS>/<file>`**, the
+  layout libcuflynx writes (Finbar, 2026-10-31). **Write only through `working_dir.store`**
+  (libcuflynx's `cuflynx_study.store_input`, reached with `ca_from`; a CA without it raises
+  `WorkingDirUnavailable`, a 422 naming CA #619): a new content gets a new dated folder, the
+  same content reuses its folder (content hash), `inputs/index.json` lists every version, and
+  nothing is ever rewritten in place. So no file under a plain name can look current by
+  mistake. Kinds: `model`, `obs_data` (also `uq_obs_data.json`), `params_for_id`,
+  `user_inputs`, `funcs`, `variable_mapping`, `obs_extraction`, `workflows/<wf>`,
+  `generated_models/<prefix>`. Something written by a converter or CA first (a conversion,
+  PhLynx state, an unpacked workflow, the variable mapping) is written into a scratch folder
+  and that folder or file stored.
+- **Which version is current** is the record's (`working_model`, `obs_path`, `params_path`,
+  the paths a run is given and the manifest records), or for a file kept per working dir
+  (funcs, `user_model.py`, the variable mapping) `working_dir.latest` (libcuflynx's
+  `latest_input`: the version stored last; storing an earlier content again makes it the
+  latest). `main._bind_working_dir(record, W)` stores a model record's inputs: every upload
+  naming a working dir and every run calls it. `_write_study_file` writes the session copy
+  and stores it once `record.working_dir` is set. The uploads dir (`UPLOAD_DIR`, pruned after
+  7 days) stays the session's scratch copy, never what a study depends on. Readers never
+  glob `inputs/<kind>/`: `load_outputs` and `study_manifest._resolve` ask `latest`.
+- **A run needs a working dir.** `_require_working_dir` 422s with
+  `working_dir.REQUIRED_MESSAGE`; there is no temp `calib_*`/`sa_*`/`uq_*`/`emu_*`
+  fallback any more, and the frontend refuses before sending (`lib/workingDir.js`).
+- **Outputs:** case dirs at the top (CA), sensitivity in `<W>/sensitivity/`
+  (`sa_output_dir` in the runner config; the param-id side stays at the top so the
+  manifest does), saved parameter sets in `<W>/saved_params/`.
+- **Older folders stay readable where their files are**: `working_dir.readable()` is the
+  latest stored version, else `user_funcs/`, `generated_models/` or the top level, and
+  readers (`load_outputs`, `/api/runs`) look in both places. A save stores a version in
+  `inputs/` and leaves the old file as it was.
+- **Wire names:** `working_dir` and `/api/working-dir/*`. `wire_aliases.WorkingDirAliases`
+  (ASGI middleware) copies `working_dir` onto `output_dir` / `outputs_dir` /
+  `config_outputs_dir` in queries and JSON bodies at any depth, and rewrites
+  `/api/outputs/*` to `/api/working-dir/*`, so the routes still declare the old field
+  names. The old names are accepted for one release; when they go, rename the fields and
+  drop the middleware. CA's own `param_id_output_dir` keeps its name. The browser
+  setting is `cuflynx-working-dir`, migrated once from `cuflynx-outputs-dir`.
+
+**Every analysis run is a step of the study workflow** (`apps/api/study_workflow.py`).
+A working dir has one growing CA calibration workflow,
+`<W>/workflow/calibration_workflow.json`, written with CA's `WorkflowBuilder`; its run
+directory is `<W>/workflows/study/`. Each calibration, sensitivity (Sobol or local) and
+UQ (MCMC or Laplace) run from a panel adds a step (`calibration-2`, `sobol-1`, ...) and
+the panel's own manager runs it alone through `workflow_runner.py` (`only=`, or
+`from_step=` when the run also added the step it starts from). Results are read from the
+step dir (`<step>/param_id`, `<step>/sensitivity`, `<step>/uq`, `step_result.json`), so
+the panels, progress polls and status shapes are unchanged. Values nobody fitted (the
+sliders, a bounds midpoint, a stopped calibration's best-so-far) are a `set` step with
+its reason, taken by `start_from` / `result_from`; a finished calibration is named
+directly. Rules: the target is the loaded model (`cellml_model`, or `external_model` for
+a `.py`), and every step names it; another model in the same working dir starts
+`study-2` and keeps the old file as `calibration_workflow_study.json`. One step of the
+study workflow runs at a time (409 otherwise). The direct runners stay for what has no
+workflow form, decided in `study_workflow.direct_reason` and said in the run log: a
+generated Python model type, held-out data (the direct calibration validates it), a
+point for a params_for_id with a modifier, an external model run with a step's values
+file, and emulator training (its bundle must stay under `emulators/` for the emulator
+lookup). A libcuflynx without `cellml_model` / the `uq` kind / `start_from` keeps every
+run direct (said once). `CUFLYNX_STUDY_WORKFLOW=0` does the same, and the test suite
+sets it: route tests that want the workflow take the `study_workflow_on` fixture.
+What the panels read from a step, all through `ca_run_history`: a local-SA step's
+**signed** `local_sensitivity_signed.csv` (`step_local_sensitivity`; its rows carry the
+Sobol indices' labels, `<item> (Exp<e>, Sub<s>)`, so the two heatmaps share axes, while a
+direct local run labels them `var^{e,s} [op]`); a uq step's posterior predictive check
+(`<step>/posterior_predictive`, `step_predictive_dir`, band by
+`posterior_predictive_band`). A study run passes `write_calibrated` whenever it leaves
+the workflow complete (CA refuses it otherwise), so the CellML target gets its
+`<stem>_calibrated_parameters.json` and calibrated CellML. **Reopening** a working dir
+(`load_outputs._with_study_steps`) fills each panel from the latest done step of its kind
+(`study_steps` names them), unless a direct run's result files are newer than the step.
+
+**Only circulatory_autogen writes results to the user's working dir** (#210). A run
 leaves CA's own files there and nothing else — no CUFLynx-authored results
 format, and no plumbing:
 
@@ -196,10 +327,91 @@ format, and no plumbing:
   covers both), UQ posteriors as `uq_posterior_samples.npy` (binned on read —
   CA's burn-in rule needs a live param-id object, so reading its raw
   `mcmc_chain.npy` would report a different posterior from the one the run did).
+- **Held-out data** (CA #535): a `prediction_item` carrying `value` (+ `data_type`,
+  `std`, `obs_dt`) is validation data, never scored. **libcuflynx does all of the
+  validation**: after a calibration the runner calls its `save_prediction_data`,
+  which scores the items (`param_id.validation`) and writes
+  `validation_results.json`; the managers only read that file. CUFLynx keeps no
+  copy of the scoring or of its rules -- a libcuflynx without `param_id.validation`
+  gives no validation, and the Analysis tab shows a one-line note instead (from
+  `/api/config` `held_out_validation_supported`). The status/load-outputs
+  `validation` is None -- never empty -- without it.
+- **Prediction items as features** ("Include prediction items" in the Sensitivity
+  (Sobol and local) and Emulator forms): passed through as
+  `sa_options.include_prediction_items` / `emulator_settings.include_prediction_items`;
+  libcuflynx then also uses the prediction_items that have an `operation` (labelled
+  by `data_item_name`) and skips the rest with a warning. CUFLynx does no feature
+  logic. Which outputs are prediction features is read from libcuflynx, never from
+  labels: Sobol's `sobol_output_features.json` (`ca_run_history.sobol_prediction_outputs`,
+  filtered to the CSV's own columns so an earlier run's file tags nothing), the
+  emulator bundle's `prediction_feature_labels` (last in `feature_labels`), and for
+  local SA the rows libcuflynx's `SensitivityAnalysis._prediction_feature_sensitivities`
+  returns -- the call its own `run_local_sensitivity` makes, evaluated here at
+  CUFLynx's nominal point (libcuflynx's local SA only linearises about the model
+  defaults) and normalised like the data_item rows; the runner's meta line carries
+  their names, since CUFLynx writes that CSV. The UI tags all of these "prediction".
+  The option is sent (runners, exported yaml) only when on **and** supported; the
+  feature detect is `obs_data.PREDICTION_FEATURES_FLAG` (`(module, constant)`),
+  **the one place its name is spelled**, read by
+  `obs_data.ca_supports_prediction_features()` and surfaced as
+  `prediction_features_supported` on `/api/sensitivity/defaults` and
+  `/api/emulator/defaults`. SA on an emulator forwards it too; libcuflynx refuses a
+  bundle trained without the features, and the SA status's `error` is the runner's
+  own reason (its `__SENSITIVITY_FAILED__` line), so that message reaches the panel.
+  Validation items with an `operation` are scalar features (`t` = end of run,
+  `model` = the feature): the table names them "x (max)" and all scalar items share
+  one parity chart (model vs data ± std, y = x).
+- **An older libcuflynx rejects newer prediction_item keys** -- the held-out keys
+  and `operation` / `operation_kwargs` -- so every hand-over goes through
+  `obs_data.for_ca` (in-process) or `obs_data.with_ca_obs_path` (runners), which
+  strip each group only when this libcuflynx cannot read it. The obs_data editor
+  keeps them (an operation picker per prediction row; the rest ride on `_orig`).
 - Reading via `find_run_dir` can reach an **earlier** run's `<case_type>` subdir,
   which the old direct read could not. `has_results(output_dir, newer_than=…)`
   takes the job's start time so a run whose own results are missing fails
   instead of reporting someone else's numbers.
+- **An MCMC run has its own directory** (CA #650): `mcmc_<prefix>_<obs>/` (CA's
+  `paramID.case_dir_name` with `UQ_CASE_METHOD`) beside the calibration's
+  `<method>_<prefix>_<obs>/`, holding the chain, `param_names.csv` and the
+  posterior predictive check. `find_run_dir` answers the calibration's and passes
+  an MCMC dir over (its `best_param_vals.npy` is a posterior median);
+  `uq_run_dir` / `uq_source_dir` answer the MCMC run's, and every chain, coverage
+  and predictive reader goes through them.
+- **The pipeline export is CA's `write_pipeline_bundle`.** CUFLynx only turns the
+  GUI's settings into the user_inputs dict (`export_pipeline.build_user_inputs`,
+  emulator keys included) and writes the bundle *beside* the working dir
+  (`<W>_export_<yymmdd>/`): the bundle is a working dir of its own.
+- **No app module may share a name with a module in CA's `sys.path` dirs**
+  (`ca_imports.ca_paths()`): the runners put those first, so the app's module is
+  shadowed (`test_no_app_module_shares_a_name_with_one_on_cas_paths`).
+- **The study manifest is CA's** (`apps/api/study_manifest.py`). libcuflynx
+  (`utilities/cuflynx_study.py`) records every calibration, UQ, sensitivity and emulator
+  run from one config in `<param_id_output_dir>/<study_name>_cuflynx_study.json`: model,
+  base_model, obs_data, params_for_id, `user_funcs` ({kind: path}), `solver_info` (+dt),
+  `runs` (newest first, `analyses` per dir), `sensitivity` and `emulator`, every path
+  relative to the manifest's folder (libcuflynx copies inputs into `inputs/`). CUFLynx only
+  reads it; bare `cuflynx_study.json` (what sympathetic_neuron's pipeline wrote) is still
+  read. Relative paths resolve against the manifest's own folder; an older manifest's
+  absolute paths are rebased from its recorded `study_dir` onto that folder, or found in
+  `inputs/<kind>/` by name (`study_manifest._resolve`). A copy away from its study
+  resolves against `study_dir` when it records one (`base_dir`). Dropping one on the app
+  (`POST /api/working-dir/manifest`, `handleStudyManifest` in `FileImport.vue`) only sets
+  the working dir and reloads it — one path for a dropped manifest and a picked folder.
+  A dropped (or picked) **.zip** goes to `POST /api/working-dir/zip` first
+  (`study_manifest.zip_study`): a `manifest.xml` at its root makes it an OMEX (an OMEX
+  carries a study manifest too), else a `*_cuflynx_study.json` at its root or one folder
+  down makes it a working dir, staged in `UPLOAD_DIR/working_dir_zips/` until
+  `/api/working-dir/zip/extract` is told where (a 409 for a folder holding files unless
+  `overwrite`). Any member with `..`, an absolute path or a symlink refuses the whole zip.
+  The answer is `study_location`'s for the extracted manifest, so `handleWorkingDirZip`
+  then takes the dropped-manifest path (`openStudyDirectory`); outputs the manifest flags
+  outside the working dir are named by the reload's `warnings` banner.
+  `pre_time`/`sim_time` in it are informational: timing comes from the obs_data protocol.
+- **Declared funcs are the user's file, not ours.** `user_funcs._user_file` returns the
+  manifest's `user_funcs[kind]` when declared, so runs, option lists and the editor all
+  act on it; saving/deleting then goes through `_splice` (replace only that `def`'s
+  lines), never `_render`, which would replace the user's docstring, imports and module
+  constants with this app's header.
 
 One analysis is deliberately **not** in that tier: `apps/api/cost_sensitivity.py`
 (`POST /api/cost_sensitivity`, `CostSensitivityBar.vue`, #188) — `d ln(cost)/d ln(p)`
@@ -218,13 +430,26 @@ A study travels between the two apps as a **COMBINE archive**, and the contract 
 asymmetric: CUFLynx owns the model's constants and **nothing else in the archive**.
 So `unpack` returns every member and the parsed manifest — not just the four roles
 it understands — and `build_archive` copies them all back byte-for-byte with exactly
-two exceptions: the model CellML (flattened, with the chosen values substituted) and
+two exceptions: the model CellML (flattened, with the chosen values substituted;
+a modular model keeps its own text and imports, see below) and
 params_for_id (refreshed from the study, so range/selection edits travel). **obs_data
 is never replaced** — verbatim when the archive has one, *added* only when it does
 not. PhLynx's `flow.json` / `changes.json` / `module_config.json` / SED-ML /
 `simulation.json` are never parsed, authored or mutated; whichever arrived is exactly
 what leaves, and none is invented when absent (#287 has not settled which editor-state
 file is authoritative, and this is what keeps CUFLynx from having to care).
+
+The third CUFLynx-owned part is the **study**: `build_archive(study=, funcs=)` writes
+the same study manifest CA writes beside results — `<prefix>_cuflynx_study.json`,
+format `application/x.vnd.cuflynx-study+json` (`study_manifest.OMEX_FORMAT`) — with
+its paths pointing at archive members, `solver_info`, and the user funcs under
+`user_funcs/`; runs/sensitivity/emulator/study_dir and a manifest's `workflow` block
+are dropped (they are one machine's directories), and `workflow` names the packed
+workflow (`workflow/calibration_workflow.json`) when the archive has one. Being ours, it and the funcs are *replaced* on each send. On import,
+`_apply_archive_study` adopts `solver_info` and writes the funcs to
+`<working dir>/inputs/funcs/`, keeping a differing existing file as
+`*.before_import_<stamp>.py`. One vocabulary for both: `study_manifest.KEYS`; the OMEX
+role names (`cellml`/`obs`/`params`) stay internal to `omex_import`.
 
 Three traps:
 
@@ -234,7 +459,9 @@ Three traps:
   alone cannot separate them; `_looks_like_obs_data` sniffs for an obs_data (a bare
   list too, so `parse_obs_data` can refuse it naming `cuflynx-upgrade`). Upstream is explicit that `flow.json` may be
   **renamed**, so its format specifier (`application/x.vnd.phlynx-flow+json`) is the
-  contract and its name is not. A params_for_id must be matched against `.json` too:
+  contract and its name is not. The embedded study manifest is classified the same way
+  (`_declared_study`) and taken out of every other pool first, or a prefix containing
+  "param" would make it the params_for_id. A params_for_id must be matched against `.json` too:
   CUFLynx stores the canonical JSON form, so without that an archive CUFLynx writes
   is not one CUFLynx can read.
 - **The send URL is `${PHLYNX_URL}/?open=omex#<bare base64>`** (`phlynxOpenUrl` in
@@ -246,10 +473,35 @@ Three traps:
   `_ModelRecord.archive_path`, restored by `_get_model`'s disk-recovery path.
   Deliberately **not** in `MODEL_SOURCE_SUFFIXES`: that tuple drives "Edit source",
   which would try to open a zip in the user's text editor.
+- **A modular archive is a bundle of paths, not names** (#407). PhLynx's export marks
+  `document.sedml` master; `model.cellml` (the SED-ML's `<model source>`) imports
+  module files beside it and units from `units/`. `unpack` keys CellMLs by archive
+  path and follows a SED-ML master to its model; `cellml_flatten.flatten_bundle`
+  writes the bundle at those paths. Writing by basename breaks every `units/` href.
+  `resources/phlynx_modular_decay.omex` is PhLynx's own output. **Sending it back**
+  writes the values into the archive's own `model.cellml` text (PhLynx keeps every
+  value in its `instance_parameters`) and returns the module and units files
+  verbatim; a value whose constant lives in a module file comes back `unresolved`
+  rather than being written into PhLynx's module.
 
-Value substitution goes through `calibrated_cellml.calibrated_cellml` — the same
-writer the calibrated-model save uses, so a send and a saved best fit produce the
-same file for the same values. Its report now names the owning `component/var` per
+**A module-library archive opens at its calibrated values**
+(`apps/api/library_calibration.py`). circulatory-autogen-modules ships
+`<instance>_calibration.json` (`calibrated_parameters`, `cost`, `method`, `date`)
+and `<instance>_calibrated_parameters.csv`. `omex_import` claims both as the
+`calibration` role -- by `calibrat` in the name, and a JSON by a
+`calibrated_parameters` object -- *before* the params_for_id and obs_data pools
+are filled (the CSV's name contains "param"). `import_omex_bytes` writes the values
+into the model with `calibrated_cellml.substitute_values` before parsing it, resolving the library's
+bare names through the params_for_id rows, so the sliders, the entries'
+`initial_value` and a later send all start from them; the response's `calibration`
+says so and the UI's notice names the cost. Unmatched names are a warning.
+
+Value substitution goes through `calibrated_cellml.substitute_values` — libcuflynx's
+`param_id.calibrated_model.substitute_parameter_values` (the writer a workflow step's
+calibrated model and the direct calibrated-model save use), so a send and a saved best
+fit produce the same file for the same values. The built-in `calibrated_cellml` is
+only the fallback for a CA that predates that writer (a capability probe, same report
+shape). The report names the owning `component/var` per
 parameter, which is how the send warns about a value written outside
 `parameters` / `parameters_global`: per #287 PhLynx will not read those back.
 
@@ -286,21 +538,50 @@ middleware answers its preflight with `Access-Control-Allow-Private-Network` —
 moving (Local Network Access will likely add a browser permission prompt), so the
 flow's UX is not entirely ours.
 
-**Not** a `cuflynx://` URL scheme: a scheme handler delivers the URI through the OS
-process-launch path, where truncation bites in the low thousands of characters, and
-`3compartment.omex` is already ~14 KB base64. Registering CUFLynx as the `.omex`
-file handler is the planned next step — it needs a macOS `.app` bundle, which the
-single-file spec does not produce.
+**`cuflynx://open?url=<archive URL>` and `?study=<file: URL>` links** (`apps/api/open_link.py`,
+`apps/desktop/url_scheme.py`). A page links to an archive by **URL**, never by
+content: a scheme handler delivers the link through the OS process-launch path,
+where truncation bites in the low thousands of characters. What is load-bearing:
+
+- **A link stages, like a PhLynx delivery.** Any page can launch a `cuflynx://`
+  link, so the app fetches the archive (https/http/file only, capped at
+  `inbox.MAX_DELIVERY_BYTES`) and puts it in the inbox; the same dialog asks, and
+  accept runs `import_omex_bytes`. A `study=` link (a `file:` URL of a study
+  manifest or its directory; http(s) refused) stages the manifest as inbox kind
+  `study`; accept returns `kind: "study"` and what `POST /api/working-dir/manifest`
+  returns, and the UI opens that working dir as a dropped manifest does.
+  Exactly one of `url` / `study`. A link that fails is recorded with
+  `inbox.report_error` and returned once by `GET /api/inbox` as `error`, which the
+  UI shows (`peekInbox` throws with `deliveryFailed`).
+- **Single instance by an instance file, not a port.** The shell writes
+  `<config dir>/instance.json` (port + random token, 0600) once its server
+  answers; a second launch with a link posts it to `/api/open-link` with the token
+  in `X-CUFLynx-Token` and exits. The route is off unless the shell set a token,
+  and a page cannot read the token, so the app cannot be used to fetch URLs for a
+  page. A stale file (nothing answering, or a different token) means start anew.
+- **Every platform runs `<exe> --open-url <link>`.** The release is a bare
+  executable per OS with no installer, so the app registers itself per user on a
+  frozen launch (`register_if_needed`, redone when the executable moves): a
+  `.desktop` + `xdg-mime` on Linux, `HKCU\Software\Classes\cuflynx` on Windows,
+  and on macOS an AppleScript applet in `~/Applications` whose Info.plist declares
+  `CFBundleURLTypes` -- LaunchServices only routes schemes to bundles, and sends the
+  URL as an Apple event (`on open location`), which the applet turns into argv.
 
 **GUI config editing** (edit CA config files in the browser → download dated copy → apply immediately):
 
-- **obs_data.json** — `EditObsDataDialog.vue` + `apps/web/src/lib/obsDataJson.js`; its operand and operation pickers are `SearchableSelect.vue` (type-to-filter, #160) because those lists are a model's whole variable set and every registered operation; edits `data_items`/`prediction_items` (incl. `source`/`comment` notes) and embeds `ProtocolInfoEditor.vue` (+ `lib/protocolInfo.js`) for `protocol_info` (experiments, params_to_change, constant/ramp/step/pulse/paced inputs, time-view plots). Time-varying inputs are written as **`protocol_shapes`** — declarations in Myokit's `[[protocol]]` vocabulary (`level`/`start`/`length`/`period`/`multiplier`), which CA expands into `protocol_traces` on read (CA#339). Declarations, not expansions, because a point table cannot be read back into the fields that produced it. `expandShape()` in `lib/protocolInfo.js` mirrors CA's expansion for the plots; **the two must agree** — change both. Hand-written `protocol_traces` are still accepted and preserved verbatim, as is any shape the editor has no form for. Dropdown vocabularies come from `apps/api/obs_options.py` (`GET /api/obs_data/options`), which introspects CA registries — **never hardcode** operations/cost_types/data_types/plot_types. A data_item's `operation_kwargs` and `cost_kwargs` (CA#304 / CA#370) are edited the same way: an input per keyword argument, from a schema introspected off the chosen func's signature (`operation_kwargs_schema` / `cost_kwargs_schema`). A stored kwarg is only ever deleted when CA has said the newly chosen func cannot accept it (`cost_kwargs_accepts_any` is a *full* map so "accepts nothing else" is distinguishable from "CA never answered") — otherwise it round-trips untouched, because dropping a key is data loss. `apps/api/obs_cost.py` calls cost funcs through CA's `call_cost_func`, so the panel's cost is the call the calibration makes: `std`/`weight` only when the signature declares them, plus the data_item's `cost_kwargs`.
+- **obs_data.json** — `EditObsDataDialog.vue` mounts **`@physiomelinks/protocol-kit`'s `ObsDataEditor`** (the editor PhLynx mounts too) on the study's whole obs_data document (`GET /api/obs_data/document`): `protocol_info` on a timeline, `data_items`, `prediction_items`, `prediction_plots`, and every key it does not know, which it keeps. Reading, editing, checking and expanding protocol shapes (`expandShape`, which `lib/plot.js` also uses) are protocol-kit's, checked against CA by its golden vectors — fix them there, not here. Time-varying inputs are written as **`protocol_shapes`** (Myokit's `[[protocol]]` vocabulary), which CA expands into `protocol_traces` on read (CA#339). Save writes the dated copy (`versionedJsonName` in `lib/obsDataJson.js`) and waits while protocol-kit reports what CA would refuse. The vocabulary comes from `apps/api/obs_options.py` (`GET /api/obs_data/options`, read with protocol-kit's `readObsDataOptions`), which introspects CA registries — **never hardcode** operations/cost_types/data_types/plot_types. A host can give the dialog a `document`, a `save` and `preselect` parameters (lanes with no value, `withParameters`): the Workflow tab edits a step's own obs_data that way. `apps/api/obs_cost.py` calls cost funcs through CA's `call_cost_func`, so the panel's cost is the call the calibration makes: `std`/`weight` only when the signature declares them, plus the data_item's `cost_kwargs`.
+- **Calibrating PhLynx selections (PhLynx #492, CA #594)** — a workflow step whose model is `{"select": [...]}` calibrates instances of its module-array target. An imported archive whose workflow has any (`calibration_workflow.select_steps`) opens it straight away. CA's `UnsetParametersError` (a boundary the selection cuts, with no protocol) reaches the GUI as a 422 from `/api/workflow/view` with `detail.unset_parameters {step_id, names}`, and from a run as the runner's `unset_parameters` event; either opens the step's own obs_data (`/api/workflow/step_input`, target names, not the tab's `mod` copy) with those names preselected. A study sent to PhLynx from a workflow tab also carries the target's module array and its parameters with the merged values, top level, once every step has a current result: CA writes them as nested JSON (`write_calibrated_parameters_to`) and `workflow_manager.phlynx_parameters_csv` converts that to the `<prefix>_parameters.csv` PhLynx reads (`parameter_rows`: `<instance>/<variable>`, `heart/lv/E_A`, a global by its name). `tests/fixtures/phlynx_send_back_parameters.csv` is that CSV, and PhLynx's tests read it. A step's params_for_id is written as JSON; a picked CSV is converted.
 - **params_for_id.json** — `EditParamsDialog.vue` + `apps/web/src/lib/paramsCsv.js`; edits ranges/selection, writes a dated JSON, can apply best-fit to sliders. **An uploaded CSV is converted to JSON on the way in** (by CA, which owns the conversion; `params_json.csv_to_file_text`) and stored as `<study>_params_for_id.json`: CA reads no other form. Without CA, `params_json._csv_to_json_without_ca` does the same mapping (the packaged app starts with no CA directory set); `test_params_csv_fallback_matches_ca` pins it to CA's.
 
 **User-authored funcs** (`apps/api/user_funcs.py`) come in **three** kinds, one
-file and one CA config key each, all under `<outputs>/user_funcs/`:
+file and one CA config key each, all under `<working dir>/inputs/funcs/` (an older
+folder's `user_funcs/` is used where it already holds them):
 `operation_funcs_user.py` / `cost_funcs_user.py` (CA#303, named by an obs_data
 data_item) and `modifier_funcs_user.py` (CA#383, named by a params_for_id entry).
+Each file is written by libcuflynx's `utilities.user_funcs_file.write_funcs_file`
+(CA #652), the layout its `WorkflowBuilder.add_operation` writes too, so a notebook's
+workflow functions and the editor's are one file format; `_render` is only the
+fallback for a libcuflynx without it.
 Everything is driven off the `_KINDS` map — the run config, the export copy into
 `resources/`, and the yaml keys all fall out of it, and the exported script
 matches the external-path keys **by suffix** so a fourth kind needs no edit
@@ -310,6 +591,35 @@ modifier's `inputs` (`{name: qname}` / `{name: [qnames]}`) round-trips verbatim
 through both the backend and the editor — dropping it silently breaks the entry
 on the next run. *Not yet built:* a form for entering those input qnames, so a
 modifier that takes any is still only configurable in a hand-written file.
+
+**An archive's funcs are installed on import.** A `.py` member named
+`*operation_funcs*` / `*cost_funcs*` / `*modifier_funcs*` (`omex_import.user_func_kind`
+— by name, never by manifest format, since an external_python model is
+`text/x-python` too) is split into its top-level `def`s and each goes through
+`save_user_func` into the store under the upload's `output_dir`, exactly as if typed
+into Custom funcs. Never clobbers: an identical func is `unchanged`, a *different*
+one of the same name is a `conflict` (kept, warned); a def the dialog would reject is
+`invalid` (warned); the study loads regardless. Only defs travel, so module-level
+names the stored header does not provide are named in a warning. The response's
+`user_funcs` lists each with its status, and the inbox summary lists funcs members
+so the confirmation dialog can say a delivery carries code before it is accepted.
+**The study manifest wins:** an archive carrying a readable study manifest
+(`application/x.vnd.cuflynx-study+json`) installs only the funcs files it declares, whole
+(`main._apply_archive_study`); its funcs-named members are then listed with status
+`manifest` and not installed a def at a time, so nothing is installed twice.
+
+**A study's user_inputs.yaml sets the solver** (`main._adopt_solver_settings`). A
+`*user_inputs*.yaml` in an `.omex` without a study manifest (with one, the manifest's
+`solver_info` is adopted instead and the yaml is not read), in a reopened run directory (when its
+`cuflynx_study.json` records no `solver_info`), or picked in Settings
+(`POST /api/user_inputs/upload`) has its `solver`, `solver_info` and `dt` adopted
+exactly as a Settings change: env, saved settings, `engine.reset()`. Keys the solver
+cannot honour (`MaximumNumberOfSteps` under `CVODE_myokit`) and solvers the format does
+not offer (OpenCOR) are **dropped with a warning, never a 422** on import. Responses carry
+`solver_settings: {solver, solver_info, dt, source, ignored}` (null when there was none),
+and the frontend re-reads `/api/config` on every model load so Settings is never stale.
+Runs get `engine.dt` server-side (`_with_engine_dt`) unless the request names a `dt` —
+the analysis panels therefore send none; a literal there overrode the adopted step.
 
 ## Desktop packaging (pywebview + PyInstaller)
 
@@ -454,15 +764,37 @@ an empty pipe.
   listed file that is missing fails the *build*. Examples ship as **`.omex`**, not
   loose CellML, because an example is a study — model + obs_data + params_for_id —
   and the frontend loads it through the existing archive path.
-- **A C compiler cannot be bundled away — but it is only needed for one backend.**
-  Of CA's `src/solver_wrappers/*`, **only `myokit_helper.py` compiles anything**;
+- **A C compiler cannot be bundled away — but only the compiling cellml solvers need one.**
+  Of CA's solver wrappers, `myokit_helper.py` (CVODE_myokit) and `batched_c_helper.py`
+  (BE_batched_c, which also needs **CMake**) compile each model at run time;
   `python` (scipy `solve_ivp`) and `casadi_python` (`casadi_integrator`) are
   compiler-free and both are verified working in the frozen app. So a missing
   compiler is a **warning, not an error**: `compiler_check.py` detects it,
-  `GET /api/config` returns `cpp_compiler: {present, hint, affects, alternatives}`,
-  and `App.vue` shows a `warn` banner naming the backends that still work. Don't
-  regress this to an error. `scripts/install.py` shares the detection — keep it in
-  one place.
+  `GET /api/config` returns `cpp_compiler: {present, hint, affects, alternatives,
+  unavailable_solvers}`, and `App.vue` shows a `warn` banner naming the backends that
+  still work. Don't regress this to an error. BE_batched_c is instead **withheld from
+  the solver menu** when CMake or the compiler is missing (`unavailable_solvers`, read
+  by `solver_options`), and Settings says why. `scripts/install.py` shares the
+  detection — keep it in one place.
+- **BE_batched_c reads `MaximumStep` and `MaximumNumberOfSteps` differently from CVODE**
+  (no step cap by default; a step budget per block over the whole run), so CVODE's
+  defaults — CA's ProtocolRunner's 0.001/5000, its parser's 5000, the runners' 1e-4 —
+  must never reach it: `solver_info_defaults.py` puts the solver's own declared
+  defaults under the settings first, in the engine (`run_solver_info`, which also adds
+  its `build_dir` under the user cache) and in every runner. Its build-cache key is a
+  digest of two of libcuflynx's own source files, which is why the spec collects
+  those as data (`_SOURCES_READ_AT_RUN_TIME`).
+
+- **The browser fallback must still end the process.** A Linux build has no
+  GTK/Qt bindings, so pywebview cannot open a window and the shell opens the
+  system browser instead. Closing a tab ends no process and a file-manager launch
+  has no terminal to Ctrl+C, so the shell must stop itself, or the server and its
+  `/tmp/_MEI*` dir live until logout. Tabs report through
+  `/api/presence/{beat,leave}` (`lib/presence.js` → `apps/api/presence.py`) and
+  `wait_until_abandoned` stops the server once the last one has gone. Never wait
+  on an Event nothing sets (`test_no_browser_mode_waits_forever` checks). Keep
+  `stale_after` above Chrome's one-run-a-minute throttle for hidden tabs, or a
+  backgrounded tab reads as closed.
 
 **`POST /api/config` semantics — `ca_dir` omitted means "leave unchanged".** It is
 `str | None = None`; only an explicit `""` resets to the default. This is load-
@@ -486,12 +818,23 @@ interpreter, so without this the user reconfigures on every launch.
 - Parameter names for Myokit must use **`component/param`** form from `params_for_id` (`PrimitiveParsers.get_param_id_info`).
 - Slider debouncing: interactive exploration needs low-latency sim; protocol runs may take seconds on first compile (cache helper like ICUHealthy `acquire_helper`).
 
+### PR review guides
+
+When asked for a review page for a PR, publish an HTML artifact with:
+
+- **What it does**, in the PR's main parts, from the current diff rather than the PR description; say where the description is out of date.
+- **Multiple-choice questions**: four options, one correct; picking one marks it right or wrong at once and shows the reason with a `file:line` reference, with a running score and a reset.
+- **No give-aways**: options of similar length (the correct one is not the longest or shortest more than chance would make it), correct answers spread evenly over A-D, and wrong options that are plausible misreadings of the code.
+- **Before you merge**: merge-order holds, conflicts with other open PRs, stale descriptions, and what a local test run needs.
+
+Check every answer against the code at the PR's head before publishing.
+
 ## Security caveats (localhost-only assumptions)
 
 The backend assumes a single-user, localhost deployment and exposes the host filesystem to any client that can reach the API:
 
-- **`GET /api/fs/list`** (`apps/api/main.py`) — the in-app file/folder browser (Python interpreter + outputs dir pickers) lists arbitrary server directories, defaulting to `$HOME`. No path confinement.
-- **`config_outputs_dir`** (calibration) — writes calibration outputs to any absolute path the client supplies.
+- **`GET /api/fs/list`** (`apps/api/main.py`) — the in-app file/folder browser (Python interpreter + working dir pickers) lists arbitrary server directories, defaulting to `$HOME`. No path confinement.
+- **`working_dir`** (every run, and uploads) — writes inputs and outputs to any absolute path the client supplies.
 
 These are acceptable for the current local use. **If the API is ever served beyond localhost, gate/confine both** under a configured root (and authenticate).
 

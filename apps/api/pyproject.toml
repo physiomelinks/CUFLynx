@@ -53,7 +53,10 @@ dependencies = [
     #     older engine rejects those as unknown keys.
     # So a 0.7.0 app on a 0.7.2 engine writes files its own engine refuses. The floor is
     # what stops pip resolving that combination.
-    "libcuflynx>=0.7.3",
+    #
+    # 0.8.0 raises it again: 0.7.3 pins libcellml<0.7, which cannot install beside the
+    # libcellml>=0.7.2 below.
+    "libcuflynx>=0.8.0",
     # Myokit JIT-compiles each model to a CPython extension at run time, inside the
     # frozen process, and that compile uses setuptools' build_ext command. Python <=3.11
     # venvs happen to ship setuptools, which is why relying on it has worked so far; 3.12
@@ -83,6 +86,7 @@ dependencies = [
     "ruamel.yaml>=0.17.0",
     "rdflib>=5.0.0",
     "pint>=0.18",
+    "jinja2>=3.0",          # renders the C BE_batched_c builds each model from
     # circulatory_autogen's *cost-gradient* imports, which are in-process too. #188
     # put the analytic cost gradient in the live tier: cost_gradient.py imports CA's
     # param_id.paramID, and that reaches an unguarded `import numdifftools` in CA's
@@ -107,6 +111,22 @@ dev = [
     "httpx>=0.27.0",
     "pytest>=7.0.0",
     "pytest-cov>=3.0.0",
+]
+# Reading raw electrophysiology recordings (apps/api/obs_extract).
+#
+# Only neo, and only for WCP. myokit is a core dependency and reads both WCP and
+# ABF through `myokit.formats.SweepSource`, which is why pyabf is deliberately
+# NOT here -- it read 21/21 of the .abf corpus this was built against, so a
+# second ABF library would be pure duplication.
+#
+# neo earns its place on measurement: over 60 of 488 real .wcp files, myokit read
+# 41 and rejected 19 with "WCP file contains more than one sampling rate" (its
+# reader takes the `nbh` header field as a byte count where those files mean
+# 512-byte sectors, so it seeks past the record header). neo read all 60. The
+# readers fall back to myokit when neo is absent, so the app works without this
+# extra -- it just cannot open about a third of a real WCP corpus.
+dataimport = [
+    "neo>=0.12.0",
 ]
 # Desktop shell + single-file packaging (scripts/package.py). Not needed to run
 # the app from source, only to build/ship the double-clickable executable.
@@ -159,7 +179,7 @@ analysis = [
 full = [
     # Same floor as the base dependency above, for the same reason -- the full bundle
     # ships the same engine, so it must not be allowed to resolve an older one.
-    "libcuflynx[emulation,uq]>=0.7.3",
+    "libcuflynx[emulation,uq]>=0.8.0",
     # Surrogate models -- CA's do_emulation / use_emulator, and the Emulator tab's live
     # prediction line, which currently needs a user-supplied interpreter.
     "autoemulate>=2.1,<3",
@@ -182,6 +202,9 @@ only-include = [
     "cellml_meta.py",
     "obs_data.py",
     "params_for_id.py",
+    # The one package rather than a module: obs_extract is a candidate to move
+    # to its own repository, so it is kept as a directory (see its __init__).
+    "obs_extract",
 ]
 
 [tool.pytest.ini_options]

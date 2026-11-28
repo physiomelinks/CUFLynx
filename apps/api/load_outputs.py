@@ -1,4 +1,4 @@
-"""Read everything a finished run left in an outputs directory (#255, #256).
+"""Read everything a finished run left in a working dir (#255, #256).
 
 The panels are populated by job polls today, so they only fill for a run started
 in this session. A run produced by ``cuflynx-param-id``, by a generated
@@ -24,14 +24,16 @@ import re
 
 import ca_run_history
 import study_manifest
+import study_workflow
+import working_dir
 import mcmc_progress
 
 #: What a caller can ask for, and the order the summary lists them in.
 SECTIONS = ("calibration", "progress", "sensitivity", "uq", "emulator")
 
-COVERAGE_FILE = "posterior_predictive_coverage.json"
-PREDICTIVE_FILE = "posterior_predictive.npz"
-SERIES_FILE = "posterior_predictive_series.npz"
+COVERAGE_FILE = ca_run_history.PREDICTIVE_COVERAGE_FILE
+PREDICTIVE_FILE = ca_run_history.PREDICTIVE_FILE
+SERIES_FILE = ca_run_history.PREDICTIVE_SERIES_FILE
 
 
 #: Files that mark a directory as holding a finished run.
@@ -41,7 +43,7 @@ _RUN_MARKERS = ("best_param_vals.npy", "mcmc_chain.npy", "best_cost.npy")
 def list_run_dirs(output_dir: str) -> list:
     """Every finished run under ``output_dir``, newest first.
 
-    One outputs directory very often holds several: a study fitted to three
+    One working dir very often holds several: a study fitted to three
     datasets writes three sibling run directories, and ``find_run_dir`` returns
     exactly one of them. Loading that one silently is how a panel ends up
     describing a different dataset than the user thinks they are looking at, so
@@ -93,6 +95,9 @@ def _calibration(output_dir, file_prefix, missing):
                              lambda: ca_run_history.modifiers(output_dir), missing),
         "error_vectors": _safely(
             "error vectors", lambda: ca_run_history.error_vectors(output_dir), missing),
+        # None, not an empty result, when the run had no held-out data (CA #535).
+        "validation": _safely(
+            "validation", lambda: ca_run_history.validation_results(output_dir), missing),
         "calibrated_model": _safely(
             "calibrated model", lambda: _calibrated_model(output_dir, file_prefix), missing),
     }
@@ -192,7 +197,7 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
 
     The model is resolved by ``file_prefix`` rather than by picking whatever CellML is
     lying about: a directory may hold artefacts from several studies (this is ordinary --
-    outputs directories get reused), and attaching one study's model to another's results
+    working dirs get reused), and attaching one study's model to another's results
     produces numbers that look right.
 
     A manifest changes both of those from a search into a reading. ``model`` is taken
@@ -208,8 +213,16 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
         output_dir)
     generated = None
     if prefix:
+        # The working dir's own copy of the model first (the version stored last, from
+        # inputs/index.json), then a conversion stored there, then CA's
+        # generated_models/ (also the older CUFLynx layout).
+        for kind in ("model", f"generated_models/{prefix}"):
+            found = working_dir.latest(output_dir, kind, f"{prefix}.cellml")
+            if found is not None:
+                generated = str(found)
+                break
         candidate = os.path.join(output_dir, "generated_models", prefix)
-        if os.path.isdir(candidate):
+        if not generated and os.path.isdir(candidate):
             models = sorted(glob.glob(os.path.join(candidate, "*.cellml")))
             generated = models[0] if len(models) == 1 else None
 
@@ -217,7 +230,14 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
     # directory produced by cuflynx-param-id has one there and no `*_calibrated.cellml`
     # at all. `generated` above already found it when there is exactly one CellML in the
     # prefix's folder; this names it when the folder holds more than the model.
-    model = (declared.get("model")
+    # A manifest written during a run declares the model it started from: the calibrated one
+    # this app writes appears only after the run's last record. So a declared model that is
+    # still the base model gives way to a calibrated one sitting where this app puts it.
+    declared_model = declared.get("model")
+    if declared_model and declared_model == declared.get("base_model"):
+        declared_model = (ca_run_history.calibrated_model_path(output_dir, prefix)
+                          or declared_model)
+    model = (declared_model
              or generated
              or ca_run_history.ca_calibrated_model(output_dir, prefix)
              or _calibrated_model(output_dir, file_prefix))
@@ -227,13 +247,24 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
         obs, params = _snapshot_pair(run_dir)
     obs = obs or declared.get("obs_data")
     params = params or declared.get("params_for_id")
+    # A run in a working dir keeps no copies of its inputs: ``inputs/`` holds them.
+    obs = obs or _stored_input(output_dir, "obs_data")
+    params = params or _stored_input(output_dir, "params_for_id")
 
-    # Looked for in the outputs directory, which is where a generated pipeline bundle puts
+    # Looked for in the working dir, which is where a generated pipeline bundle puts
     # it. Absent is ordinary -- a run started from this app has never written one -- so it
     # is reported rather than treated as a fault.
-    user_inputs = _newest(
-        glob.glob(os.path.join(output_dir, "user_inputs*.yaml"))
-        + glob.glob(os.path.join(output_dir, "user_inputs*.yml"))
+    user_inputs = declared.get("user_inputs") if declared.get("user_inputs") and \
+        os.path.isfile(declared["user_inputs"]) else None
+    # The version stored last (inputs/index.json), CA's dated archives in
+    # inputs/user_inputs/, or one at the top of an older folder.
+    stored = working_dir.latest(output_dir, "user_inputs")
+    user_inputs = user_inputs or _newest(
+        [str(stored)] * (stored is not None)
+        + [path for folder in (os.path.join(output_dir, "inputs", "user_inputs"), output_dir)
+           for pattern in ("*.yaml", "*.yml")
+           for path in glob.glob(os.path.join(folder, pattern))
+           if os.path.basename(path).startswith("user_inputs") or folder != output_dir]
     )
 
     return {
@@ -245,6 +276,18 @@ def _study(output_dir, run_dir, file_prefix, missing, manifest=None):
         "user_inputs": user_inputs,
         "file_prefix": prefix,
     }
+
+
+def _stored_input(output_dir, kind):
+    """The newest ``kind`` input in the working dir's ``inputs/``, or None (also for a
+    libcuflynx without working dirs)."""
+    try:
+        from ca_imports import ca_from, ensure_ca_path  # noqa: PLC0415
+
+        ensure_ca_path()
+        return ca_from("utilities.cuflynx_study", "latest_input")(output_dir, kind)
+    except Exception:  # noqa: BLE001 - an older CA, or a dir that is not a working dir
+        return None
 
 
 def _prefix_from_calibrated_model(output_dir):
@@ -280,12 +323,30 @@ def _progress(run_dir, output_dir, missing):
     )
 
 
-def _sensitivity(output_dir, missing):
+def _sensitivity(output_dir, missing, declared=None):
+    """Local and Sobol results: the working dir's own, else the study's declared ones.
+
+    The working dir's are in ``sensitivity/`` (at its top level in an older folder). CA
+    writes sensitivity results to ``sa_options.output_dir``; the study manifest records
+    where each analysis actually went, newest first.
+    """
+    def first(reader, method):
+        for directory in (os.path.join(output_dir, working_dir.SENSITIVITY), output_dir):
+            found = reader(directory) if os.path.isdir(directory) else None
+            if found:
+                return found
+        for entry in declared or []:
+            if entry.get("method") in (method, None):
+                found = reader(entry["dir"])
+                if found:
+                    return found
+        return None
+
     return {
         "local": _safely("local sensitivity",
-                         lambda: ca_run_history.local_sensitivity(output_dir), missing),
+                         lambda: first(ca_run_history.local_sensitivity, "local"), missing),
         "sobol": _safely("Sobol indices",
-                         lambda: ca_run_history.sobol_indices(output_dir), missing),
+                         lambda: first(ca_run_history.sobol_indices, "sobol"), missing),
     }
 
 
@@ -308,9 +369,13 @@ def _uq(output_dir, run_dir, missing):
         # The chosen run is the newest of *any* kind, and `uq_distributions` resolves the
         # newest run for itself -- so in a directory whose newest run is a calibration, both
         # land on a run holding no chain and the answer was "no UQ" for a folder with a
-        # finished UQ in it. Observed on a real outputs directory.
+        # finished UQ in it. Observed on a real working dir.
         found = ca_run_history.uq_distributions(source)
         if found:
+            # Without its own samples file, the posterior came from the chain in the
+            # MCMC run's directory.
+            if not os.path.isfile(os.path.join(source, ca_run_history.UQ_SAMPLES_FILE)):
+                uq_source["path"] = ca_run_history.uq_source_dir(source)
             return found
         # Newest first, so "the UQ" means the most recent one, consistent with how the run
         # itself is chosen. An explicit run_dir that *has* a chain never reaches here, so a
@@ -353,6 +418,9 @@ def _uq(output_dir, run_dir, missing):
 
     payload["has_posterior_predictive"] = os.path.isfile(
         os.path.join(answered, PREDICTIVE_FILE))
+    if payload["has_posterior_predictive"]:
+        payload["posterior_predictive"] = ca_run_history.posterior_predictive_band(
+            answered, payload["coverage"])
     payload["has_sample_traces"] = os.path.isfile(os.path.join(answered, SERIES_FILE))
 
     # The chain itself, as the three views the UQ Progress tab draws (#244). The posterior
@@ -375,50 +443,30 @@ def _uq(output_dir, run_dir, missing):
     return payload
 
 
-def _bundles_in(directory):
-    """Bundle names directly under ``directory``, or ``[]`` if it is a bundle itself.
+def _emulator(output_dir, file_prefix, obs_path, missing, declared=None, chosen=None):
+    """The emulator to report, and every one this study could be read with.
 
-    A bundle is a directory holding ``emulator_metadata.json``; a container holds
-    bundles and no metadata of its own.
+    A manifest naming the emulator is believed outright. It is the only way to reach
+    one bundle shared by several studies, which is what a jointly-trained emulator is
+    for -- the conventional search only ever looks inside the selected directory. What
+    it names may be a bundle or a directory of them: a study that fits one design with
+    several emulator families has no single emulator to declare, and declaring the
+    container is how it says "these, pick one" instead of silently nominating whichever
+    happened to be written last.
     """
-    if not directory or not os.path.isdir(directory):
-        return []
-    if os.path.isfile(os.path.join(directory, "emulator_metadata.json")):
-        return []
-    return sorted(
-        entry.name for entry in os.scandir(directory)
-        if entry.is_dir() and os.path.isfile(
-            os.path.join(entry.path, "emulator_metadata.json")))
+    choices = _safely(
+        "emulator choices",
+        lambda: ca_run_history.emulator_choices(output_dir, file_prefix, obs_path,
+                                                declared),
+        missing) or []
 
-
-def _emulator(output_dir, file_prefix, obs_path, missing, declared=None):
-    # A manifest naming the emulator is believed outright. It is the only way to reach
-    # one bundle shared by several studies, which is what a jointly-trained emulator is
-    # for -- the conventional search only ever looks inside the selected directory.
-    if declared:
-        emu_dir = declared
-    else:
-        # find_ rather than the plain resolver: this reads a run it did not produce,
-        # and emulator_dir is a setting a study can point anywhere -- one trained
-        # emulator reused across several obs_data has to.
-        emu_dir = _safely(
-            "emulator directory",
-            lambda: ca_run_history.find_emulator_dir(output_dir, file_prefix, obs_path),
-            missing)
+    emu_dir = _safely(
+        "emulator directory",
+        lambda: ca_run_history.default_emulator_dir(output_dir, file_prefix, obs_path,
+                                                    choices, declared, chosen),
+        missing)
     if not emu_dir:
-        return {"dir": None, "metadata": None, "error_points": None}
-    # A manifest may declare the *container* rather than one bundle -- that is how a
-    # study says "these several, choose one". Choosing is not implemented here, so say
-    # so out loud: reading it as a bundle finds no metadata and would otherwise present
-    # a study with several trained emulators as one with none.
-    bundles = _bundles_in(emu_dir)
-    if bundles:
-        missing.append(
-            "emulator (%s declares a container of %d bundles: %s; this build reads a "
-            "single bundle, so point the manifest at one of them)"
-            % (os.path.basename(emu_dir), len(bundles), ", ".join(bundles)))
-        return {"dir": emu_dir, "metadata": None, "error_points": None,
-                "bundles": bundles}
+        return {"dir": None, "metadata": None, "error_points": None, "choices": []}
     return {
         "dir": emu_dir,
         "metadata": _safely("emulator metadata",
@@ -426,11 +474,291 @@ def _emulator(output_dir, file_prefix, obs_path, missing, declared=None):
         "error_points": _safely(
             "emulator error points",
             lambda: ca_run_history.emulator_error_points(emu_dir), missing),
+        "choices": choices,
     }
 
 
+def step_outputs(step_result: dict | None) -> dict | None:
+    """The results of a calibration workflow step that are not a calibration, from CA's
+    ``step_result.json`` (``workflow_model``'s ``result``), in :func:`load_outputs`' shape:
+    a sensitivity step's indices (``sensitivity_dir``), an emulation step's emulator
+    (``emulator_dir``) and an identifiability step's Laplace posterior (``laplace``, as
+    ``uq`` with method ``laplace``). None when the step has none of them; a calibration
+    step's results are read from its ``param_id_output_dir`` by :func:`load_outputs`.
+    """
+    result = step_result or {}
+    sensitivity_dir = result.get("sensitivity_dir")
+    emulator = result.get("emulator_dir")
+    laplace = result.get("laplace") or {}
+    if not (sensitivity_dir or emulator or laplace):
+        return None
+    missing: list[str] = []
+    out: dict = {"dir": sensitivity_dir or emulator or laplace.get("mean_path"),
+                 "run_dir": None, "found": [], "missing": missing}
+    if sensitivity_dir:
+        out["sensitivity"] = {
+            "local": _safely("local sensitivity",
+                             lambda: ca_run_history.step_local_sensitivity(result), missing),
+            "sobol": _safely("Sobol indices",
+                             lambda: ca_run_history.sobol_indices(sensitivity_dir), missing),
+        }
+        if out["sensitivity"]["local"] or out["sensitivity"]["sobol"]:
+            out["found"].append("sensitivity")
+    if emulator:
+        metadata = _safely("emulator metadata",
+                           lambda: ca_run_history.emulator_metadata(emulator), missing)
+        out["emulator"] = {
+            "dir": emulator, "metadata": metadata, "choices": [],
+            "error_points": _safely("emulator error points",
+                                    lambda: ca_run_history.emulator_error_points(emulator),
+                                    missing),
+        }
+        if metadata:
+            out["found"].append("emulator")
+    if laplace:
+        params = _safely("Laplace posterior", lambda: ca_run_history.laplace_distributions(
+            laplace.get("mean_path") or "", laplace.get("covariance_path") or "",
+            result.get("parameters")), missing)
+        out["uq"] = {"params": params, "method": "laplace", "coverage": None,
+                     "progress": None, "run_dir": os.path.dirname(laplace.get("mean_path") or "")}
+        if params:
+            out["found"].append("Laplace posterior")
+    return out
+
+
+#: The panels a study workflow step fills: ``(kind, method)`` of its ``step_result.json``.
+STUDY_PANELS = ("calibration", "sobol", "local", "uq")
+
+
+def _step_panel(result: dict) -> str | None:
+    kind = result.get("kind")
+    if kind == "calibration":
+        return "calibration"
+    if kind == "sensitivity":
+        return "local" if result.get("method") == "local" else "sobol"
+    if kind == "uq":
+        return "uq"
+    return None
+
+
+def _iso_time(text) -> float | None:
+    """A step's ``finished`` (local ISO time, as CA writes it) as a timestamp, or None."""
+    import datetime  # noqa: PLC0415
+
+    try:
+        return datetime.datetime.fromisoformat(str(text)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _study_run_dir(output_dir: str) -> str | None:
+    """The run directory of the working dir's study workflow, or None when it has none."""
+    try:
+        with open(study_workflow.workflow_path(output_dir), encoding="utf-8") as handle:
+            name = json.load(handle).get("workflow_name")
+    except (OSError, ValueError, AttributeError):
+        return None
+    run = study_workflow.run_dir(output_dir, str(name or study_workflow.WORKFLOW_NAME))
+    return run if os.path.isdir(run) else None
+
+
+def latest_study_steps(output_dir: str) -> dict:
+    """``{panel: step_result}``: per panel (:data:`STUDY_PANELS`), the ``step_result.json``
+    of the study workflow's latest done step of that kind, by its ``finished`` time. Empty
+    when the working dir has no study workflow, or no step has finished."""
+    run = _study_run_dir(output_dir)
+    if run is None:
+        return {}
+    latest: dict = {}
+    for entry in sorted(os.listdir(run)):
+        result = ca_run_history.step_result(os.path.join(run, entry))
+        if not result or result.get("status") != "done":
+            continue
+        panel = _step_panel(result)
+        finished = _iso_time(result.get("finished"))
+        if panel is None or finished is None:
+            continue
+        if panel not in latest or finished >= latest[panel][0]:
+            latest[panel] = (finished, result)
+    return {panel: result for panel, (_, result) in latest.items()}
+
+
+def _study_step_uq(result: dict, missing: list) -> dict:
+    """A workflow uq step's results in :func:`_uq`'s shape: its posterior, its posterior
+    predictive check (coverage and band) and, for MCMC, its chain."""
+    predictive = ca_run_history.step_predictive_dir(result)
+    coverage = _safely("posterior predictive coverage",
+                       lambda: ca_run_history.predictive_coverage(predictive), missing)
+    payload = {
+        "params": _safely("UQ posteriors", lambda: ca_run_history.step_uq_marginals(result),
+                          missing),
+        "method": result.get("method") or "mcmc",
+        "coverage": coverage,
+        "progress": None,
+        "run_dir": result.get("uq_output_dir"),
+        "has_posterior_predictive": bool(
+            predictive and os.path.isfile(os.path.join(predictive, PREDICTIVE_FILE))),
+        "has_sample_traces": bool(
+            predictive and os.path.isfile(os.path.join(predictive, SERIES_FILE))),
+    }
+    if payload["has_posterior_predictive"]:
+        payload["posterior_predictive"] = ca_run_history.posterior_predictive_band(
+            predictive, coverage)
+    uq_dir = result.get("uq_output_dir")
+    if payload["method"] == "mcmc" and uq_dir and os.path.isdir(uq_dir):
+        labels = [str(p) for p in result.get("parameters") or []]
+        progress = _safely("MCMC progress", lambda: mcmc_progress.progress(uq_dir, labels),
+                           missing)
+        payload["progress"] = progress if (progress or {}).get("steps") else None
+    return payload
+
+
+def _study_step_sections(panel: str, result: dict, missing: list) -> dict:
+    """The sections of :func:`load_outputs`' result that ``result`` (a workflow step's
+    ``step_result.json``) fills for ``panel``."""
+    if panel == "calibration":
+        case = result.get("param_id_output_dir") or ""
+        base = os.path.dirname(case)
+        calibration = _calibration(base, None, missing)
+        calibration["calibrated_model"] = (result.get("calibrated_model")
+                                           or calibration.get("calibrated_model"))
+        return {"calibration": calibration, "progress": _progress(case, base, missing)}
+    if panel in ("sobol", "local"):
+        outputs = step_outputs(result) or {}
+        missing.extend(outputs.get("missing") or [])
+        return {"sensitivity": {panel: (outputs.get("sensitivity") or {}).get(panel)}}
+    return {"uq": _study_step_uq(result, missing)}
+
+
+def _mtime(paths) -> float | None:
+    """The newest modification time of the files among ``paths``, or None."""
+    times = [os.path.getmtime(p) for p in paths if p and os.path.isfile(p)]
+    return max(times) if times else None
+
+
+def _direct_times(output_dir: str, result: dict) -> dict:
+    """``{panel: time}`` of the direct results :func:`load_outputs` read, for comparing
+    with the study workflow's steps: when each run's result files were written."""
+    run_dir = result.get("run_dir") or ""
+    sensitivity_dirs = [os.path.join(output_dir, working_dir.SENSITIVITY), output_dir]
+    uq_dir = (result.get("uq") or {}).get("run_dir") or ""
+    return {
+        "calibration": _mtime([os.path.join(run_dir, "best_param_vals.npy")]),
+        "sobol": _mtime([p for d in sensitivity_dirs
+                         for p in glob.glob(os.path.join(d, "*Sobol_indices.csv"))]),
+        "local": _mtime([os.path.join(d, ca_run_history.LOCAL_SA_FILES["relative"])
+                         for d in sensitivity_dirs]),
+        "uq": _mtime([os.path.join(uq_dir, ca_run_history.UQ_SAMPLES_FILE),
+                      os.path.join(uq_dir, "mcmc_chain.npy"),
+                      os.path.join(output_dir, ca_run_history.UQ_SAMPLES_FILE)]),
+    }
+
+
+def _has_direct(panel: str, result: dict) -> bool:
+    if panel == "calibration":
+        return bool((result.get("calibration") or {}).get("best"))
+    if panel in ("sobol", "local"):
+        return bool((result.get("sensitivity") or {}).get(panel))
+    return bool((result.get("uq") or {}).get("params"))
+
+
+def _with_study_steps(output_dir: str, result: dict, missing: list) -> None:
+    """Fill each panel from the study workflow's latest done step of its kind
+    (:func:`latest_study_steps`), unless the direct result read for that panel is newer
+    (a direct run's files written after the step finished). ``study_steps`` names the step
+    each filled panel came from."""
+    steps = latest_study_steps(output_dir)
+    if not steps:
+        return
+    times = _direct_times(output_dir, result)
+    used = {}
+    for panel in STUDY_PANELS:
+        step = steps.get(panel)
+        if step is None:
+            continue
+        direct = times.get(panel) if _has_direct(panel, result) else None
+        if direct is not None and direct > (_iso_time(step.get("finished")) or 0):
+            continue
+        for section, value in _study_step_sections(panel, step, missing).items():
+            if section == "sensitivity":
+                result["sensitivity"] = {**(result.get("sensitivity") or {}), **value}
+            else:
+                result[section] = value
+        used[panel] = step.get("step")
+    result["study_steps"] = used
+    result["study"] = _study_from_steps(result.get("study"), steps)
+
+
+def _sobol_progress(directory: str) -> dict | None:
+    """A Sobol run's progress file with its design and convergence, or None."""
+    progress = ca_run_history.run_progress(directory, finished=True)
+    if (progress or {}).get("kind") != "sobol":
+        return None
+    return {"progress": progress, "design": ca_run_history.sobol_design(directory),
+            "convergence": ca_run_history.sobol_convergence(directory)}
+
+
+def _run_progress(output_dir: str, result: dict) -> dict:
+    """CA's progress files (CA #702) of the runs whose results the panels show, for the
+    Progress tab: ``{sobol: {progress, design, convergence}, emulator, profile}``, each None
+    when there is none. Read as finished runs, so one left ``running`` reads ``stopped``.
+
+    The Sobol run is the one the indices came from: the study step's when the panel was
+    filled from one, else the working dir's ``sensitivity/`` (its top level in an older
+    folder). The emulator's is in its bundle. A profile likelihood's is the newest in the
+    working dir's ``profile_likelihood/`` or a study step's ``uq/profile_likelihood/``.
+    """
+    sobol_dirs = [os.path.join(output_dir, working_dir.SENSITIVITY), output_dir]
+    if "sobol" in (result.get("study_steps") or {}):
+        sobol_dirs = [(latest_study_steps(output_dir).get("sobol") or {}).get("sensitivity_dir")]
+    sobol = next((found for found in map(_sobol_progress, filter(None, sobol_dirs)) if found),
+                 None)
+
+    emulator = ca_run_history.run_progress((result.get("emulator") or {}).get("dir") or "",
+                                           finished=True)
+    if (emulator or {}).get("kind") != "emulation":
+        emulator = None
+
+    roots = [os.path.join(output_dir, ca_run_history.PROFILE_LIKELIHOOD_SUBDIR),
+             _study_run_dir(output_dir)]
+    profiles = [ca_run_history.find_progress(root, "profile_likelihood", finished=True)
+                for root in roots if root]
+    profile = max(filter(None, profiles), key=lambda p: str(p.get("updated") or ""),
+                  default=None)
+    return {"sobol": sobol, "emulator": emulator, "profile": profile}
+
+
+def _study_from_steps(study: dict | None, steps: dict) -> dict:
+    """``study`` with what it could not find taken from the study workflow: the model the
+    steps ran (the target) and the obs_data and params_for_id of the latest calibration step
+    (else of the latest step; a uq step's obs_data is its MLE copy). A working dir reopened
+    with no model loaded has no file prefix to find them by."""
+    study = dict(study or {})
+    source = steps.get("calibration") or max(
+        steps.values(), key=lambda r: _iso_time(r.get("finished")) or 0)
+    inputs = source.get("inputs") or {}
+
+    def existing(path):
+        return path if isinstance(path, str) and os.path.isfile(path) else None
+
+    model = source.get("model") or {}
+    found = {
+        "model": existing(model.get("cellml_model_path") or model.get("external_model_path")),
+        "obs_data": existing((inputs.get("obs_data") or {}).get("path")),
+        "params_for_id": existing((inputs.get("params_for_id") or {}).get("path")),
+    }
+    if not study.get("model") and found["model"]:
+        study["model_is_calibrated"] = False
+        study["file_prefix"] = study.get("file_prefix") or os.path.splitext(
+            os.path.basename(found["model"]))[0]
+    for key, path in found.items():
+        study[key] = study.get(key) or path
+    return study
+
+
 def load_outputs(output_dir: str, file_prefix: str | None = None,
-                 obs_path: str | None = None, run_dir: str | None = None) -> dict:
+                 obs_path: str | None = None, run_dir: str | None = None,
+                 emulator_dir: str | None = None) -> dict:
     """Everything readable in ``output_dir``, plus what was found and what wasn't.
 
     ``found`` is the point of the return value as much as the data is: "this
@@ -451,7 +779,7 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
     manifest = None
     manifest_error = None
     try:
-        manifest = study_manifest.read(output_dir)
+        manifest = study_manifest.read(output_dir, file_prefix)
     except study_manifest.ManifestError as error:
         # Not swallowed into the conventions: a manifest that exists and cannot be read
         # means this directory is not what it claims, and answering from guesses would
@@ -470,13 +798,15 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         # was asked for.
         runs = [run for run in runs if run["path"] in declared_runs] or runs
 
-    # An explicit choice wins; otherwise the manifest's first run, otherwise the newest,
-    # which is what find_run_dir would have picked anyway -- but now the caller can see
-    # the alternatives.
+    # An explicit choice wins; otherwise the manifest's first calibration run, otherwise
+    # the newest, which is what find_run_dir would have picked anyway -- but now the caller
+    # can see the alternatives. An MCMC run has a directory of its own, with no best fit or
+    # progress history to show; the UQ panel finds it for itself.
     if run_dir and any(run["path"] == run_dir for run in runs):
         chosen = run_dir
     elif declared_runs:
-        chosen = declared_runs[0]
+        chosen = next((d for d in declared_runs if not ca_run_history.is_uq_run_dir(d)),
+                      declared_runs[0])
     else:
         chosen = ca_run_history.find_run_dir(output_dir)
     run_dir = chosen
@@ -486,10 +816,11 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "run_dir": run_dir,
         "calibration": _calibration(output_dir, file_prefix, missing),
         "progress": _progress(run_dir, output_dir, missing),
-        "sensitivity": _sensitivity(output_dir, missing),
+        "sensitivity": _sensitivity(output_dir, missing, (manifest or {}).get("sensitivity")),
         "uq": _uq(output_dir, run_dir, missing),
         "emulator": _emulator(output_dir, file_prefix, obs_path, missing,
-                              declared=(manifest or {}).get("emulator")),
+                              declared=(manifest or {}).get("emulator"),
+                              chosen=emulator_dir),
         "study": _safely("study inputs",
                          lambda: _study(output_dir, run_dir, file_prefix, missing,
                                         manifest=manifest), missing),
@@ -497,7 +828,14 @@ def load_outputs(output_dir: str, file_prefix: str | None = None,
         "run_dirs": runs,
         "manifest": manifest,
         "manifest_error": manifest_error,
+        # Outputs the study recorded outside its working dir: not carried with it.
+        "warnings": study_manifest.outside_warnings(manifest),
     }
+    # The study workflow's steps fill the panels a newer direct run has not.
+    _safely("study workflow steps",
+            lambda: _with_study_steps(output_dir, result, missing), missing)
+    result["run_progress"] = _safely("progress files",
+                                     lambda: _run_progress(output_dir, result), missing)
 
     found = []
     if (result["calibration"] or {}).get("best"):

@@ -42,7 +42,8 @@ def _export(client, outputs_dir, model_id):
 
 @pytest.fixture
 def readonly_dir(tmp_path):
-    """A directory the server cannot write into."""
+    """A directory the server cannot write into. A working dir inside it has its
+    export written beside it, so in it too."""
     d = tmp_path / "readonly"
     d.mkdir()
     d.chmod(stat.S_IRUSR | stat.S_IXUSR)  # r-x------
@@ -61,7 +62,7 @@ needs_posix_perms = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 @needs_posix_perms
 def test_export_to_an_unwritable_dir_reports_the_path_and_reason(client, readonly_dir):
-    resp = _export(client, readonly_dir, _model(client))
+    resp = _export(client, readonly_dir / "study", _model(client))
 
     # A body at all -- this is the whole bug.
     assert resp.status_code != 200
@@ -78,7 +79,7 @@ def test_export_to_an_unwritable_dir_reports_the_path_and_reason(client, readonl
 @needs_posix_perms
 def test_a_client_chosen_directory_is_the_clients_to_fix(client, readonly_dir):
     """422, not 500: config_outputs_dir is what needs changing."""
-    assert _export(client, readonly_dir, _model(client)).status_code == 422
+    assert _export(client, readonly_dir / "study", _model(client)).status_code == 422
 
 
 @needs_posix_perms
@@ -98,7 +99,7 @@ def test_a_failure_in_the_servers_own_temp_dir_is_a_500(client, monkeypatch, tmp
     def boom(*_a, **_kw):
         raise PermissionError(errno.EACCES, "Permission denied", str(tmp_path / "x"))
 
-    monkeypatch.setattr(main_mod.Path, "mkdir", boom)
+    monkeypatch.setattr(main_mod.export_pipeline, "write_bundle", boom)
     resp = client.post(
         "/api/export/pipeline",
         json={"model_id": _model(client), "file_prefix": "lv", "sim_time": 2.0},
@@ -108,15 +109,12 @@ def test_a_failure_in_the_servers_own_temp_dir_is_a_500(client, monkeypatch, tmp
 
 
 def test_a_failure_writing_the_scripts_is_caught_too(client, monkeypatch, tmp_path):
-    """The yaml/script writes happen after the copies, in a separate block."""
-    real = main_mod.Path.write_text
+    """circulatory_autogen writes the bundle; its OSError is reported the same way."""
+    def boom(_inp, export_dir):
+        path = os.path.join(export_dir, "run_pipeline.py")
+        raise OSError(errno.ENOSPC, "No space left on device", path)
 
-    def boom(self, *a, **kw):
-        if self.name == "run_pipeline.py":
-            raise OSError(errno.ENOSPC, "No space left on device", str(self))
-        return real(self, *a, **kw)
-
-    monkeypatch.setattr(main_mod.Path, "write_text", boom)
+    monkeypatch.setattr(main_mod.export_pipeline, "write_bundle", boom)
     resp = _export(client, tmp_path, _model(client))
     assert resp.status_code == 422
     detail = resp.json()["detail"]

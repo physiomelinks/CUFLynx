@@ -9,7 +9,10 @@ PhLynx's ``flow.json`` / ``changes.json`` editor state, its SED-ML and
 So the rule this module implements is *copy everything, replace two things*:
 
 * the model CellML, by CUFLynx's flattened copy with the current parameter
-  values substituted into its ``initial_value`` attributes;
+  values substituted into its ``initial_value`` attributes -- or, when the
+  archive's model imports others (PhLynx's modular export, #407), by the
+  archive's own model with the values written into it, its imports and every
+  imported file kept;
 * params_for_id, by the study's own, so range and selection edits made in the
   params editor travel back.
 
@@ -24,27 +27,28 @@ having to care.
 With no source archive at all -- a study assembled from three dropped files -- a
 minimal one is synthesised rather than the send being refused: manifest, model,
 obs_data, params_for_id, and no editor state, because CUFLynx has none to invent.
+
+A calibration workflow travels as the directory libcuflynx's ``pack_workflow`` writes --
+the workflow file, every step's obs_data and params_for_id, its module arrays, the module
+versions it uses and its settings files, none of its results -- under ``workflow/``
+(:data:`omex_import.WORKFLOW_DIR`), with the study manifest's ``workflow`` naming the
+packed workflow file. Unpacked anywhere, that directory runs the whole workflow again.
 """
 
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
 
 import omex_import
-from calibrated_cellml import calibrated_cellml
+import study_manifest
+import calibrated_cellml
+from cellml_flatten import has_imports
+from cellml_meta import CellMLParseError, parse_cellml
 from params_for_id import PARAM_COMPONENTS
-
-#: The components #287 says PhLynx will read parameter changes back out of. A
-#: value written anywhere else is still written -- CUFLynx does not own the
-#: model's layout -- but the caller is told, because PhLynx will not pick it up.
-#:
-#: One list, shared with the resolver, so the components CUFLynx *finds* a
-#: parameter in and the ones it reports as readable cannot drift apart -- which
-#: is how #345 was noticed: PhLynx renamed these and only one side knew.
-PHLYNX_PARAMETER_COMPONENTS = PARAM_COMPONENTS
 
 #: The name a synthesised archive gives its model. PhLynx's URL loader looks the
 #: member up by this exact name today, and per #287 the filename is ours to
@@ -61,6 +65,7 @@ _FORMATS_BY_SUFFIX = {
     ".json": "application/json",
     ".csv": "text/csv",
     ".mmt": "http://purl.org/NET/mediatypes/text/x-myokit",
+    ".py": "text/x-python",
 }
 
 
@@ -100,29 +105,43 @@ def build_manifest(entries: list[dict]) -> bytes:
 def substitute_values(cellml_text: str, values: dict[str, float]) -> tuple[str, dict]:
     """The model with ``values`` written into it, plus what happened.
 
-    Delegates to :func:`calibrated_cellml.calibrated_cellml`, which already maps a
-    params_for_id ``vessel/param`` onto the flat model's owning component and
-    substitutes without a libCellML round-trip. There is deliberately no second
-    substituter here: a send and a saved calibrated model must write the same
-    file for the same values.
+    Delegates to :func:`calibrated_cellml.substitute_values` (libcuflynx's writer,
+    or the built-in one on an older CA), which maps a params_for_id ``vessel/param``
+    onto the model's owning component and substitutes without a libCellML
+    round-trip. There is deliberately no second substituter here: a send and a
+    saved calibrated model must write the same file for the same values.
     """
     if not values:
         return cellml_text, {"updated": [], "unresolved": [], "resolved": {}}
-    return calibrated_cellml(cellml_text, values)
+    return calibrated_cellml.substitute_values(cellml_text, values)
 
 
-def outside_parameter_components(report: dict) -> list[str]:
-    """Written names whose owning component is not one PhLynx reads back (#287)."""
+def outside_parameter_components(report: dict,
+                                 components: tuple[str, ...] = PARAM_COMPONENTS) -> list[str]:
+    """Written names whose owning component is not one PhLynx reads back (#287).
+
+    A value written anywhere else is still written -- CUFLynx does not own the
+    model's layout -- but the caller is told, because PhLynx will not pick it up.
+    ``components``: the model's parameter components (``CellMLModel.parameter_components``:
+    PhLynx's by id, #422), the same ones the resolver prefers, so what CUFLynx finds a
+    parameter in and what it reports as readable cannot drift apart (#345)."""
     out = []
     for full_name, key in (report.get("resolved") or {}).items():
         component = key.partition("/")[0]
-        if component not in PHLYNX_PARAMETER_COMPONENTS:
+        if component not in components:
             out.append(f"{full_name} -> {key}")
     return sorted(out)
 
 
+def _parameter_components(cellml_text: str) -> tuple[str, ...]:
+    try:
+        return parse_cellml(cellml_text).parameter_components
+    except CellMLParseError:
+        return PARAM_COMPONENTS
+
+
 def _relative(location: str) -> str:
-    return location.lstrip("./")
+    return omex_import.member_path(location)
 
 
 def _entry_for(location: str, master: bool = False) -> dict:
@@ -158,6 +177,72 @@ def _replace_member(
         entries.append(_entry_for(new_name))
 
 
+def _final_member(parts, role, new_name, new_bytes, members):
+    """The archive member that ends up holding ``role``, or None."""
+    if new_bytes is not None and new_name in members:
+        return new_name
+    existing = (parts["roles"][role] or [None])[0] if parts else None
+    return existing if existing in members else None
+
+
+def _embed_study(members, entries, parts, study, funcs, model_member, obs_member,
+                 params_member) -> None:
+    """Write the study manifest and the user funcs into the archive.
+
+    Results do not travel -- ``runs``, ``sensitivity``, ``emulator`` and ``study_dir``
+    describe directories on one machine -- so they are dropped, and the paths that remain
+    are archive members, which is what ``omex_import`` resolves them against.
+    """
+    roles = parts["roles"] if parts else {}
+    old_funcs = roles.get("user_funcs") or {}
+    func_members = {}
+    for kind, (filename, blob) in sorted(funcs.items()):
+        name = f"user_funcs/{filename}"
+        _replace_member(members, entries, old_funcs.get(kind), name, blob)
+        func_members[kind] = name
+    # A func the study no longer has must not come back from the source archive.
+    for kind, name in old_funcs.items():
+        if kind not in func_members:
+            members.pop(name, None)
+            entries[:] = [e for e in entries if _relative(e["location"]) != name]
+
+    # a workflow block from a manifest names files on one machine; the packed workflow, when
+    # the archive has one, is what replaces it
+    dropped = {"runs", "sensitivity", "emulator", "study_dir", "base_model", "user_inputs",
+               "manifest_path", "missing", "workflow"}
+    record = {"schema": study_manifest.SCHEMA}
+    record.update({k: v for k, v in study.items() if v is not None and k not in dropped})
+    packed = omex_import.WORKFLOW_DIR + omex_import.PACKED_WORKFLOW_NAME
+    record.update({"model": model_member, "obs_data": obs_member,
+                   "params_for_id": params_member, "user_funcs": func_members,
+                   "workflow": packed if packed in members else None})
+    record = {k: v for k, v in record.items() if v not in (None, {}, [])}
+
+    prefix = study.get("study_name") or study.get("file_prefix") or "study"
+    name = f"{prefix}{study_manifest.MANIFEST_SUFFIX}"
+    old = (roles.get("study") or [None])[0]
+    _replace_member(members, entries, old, name, (json.dumps(record, indent=2) + "\n").encode())
+    for entry in entries:
+        if _relative(entry["location"]) == name:
+            entry["format"] = study_manifest.OMEX_FORMAT
+
+
+def _embed_workflow(members, entries, workflow_files: dict[str, bytes]) -> None:
+    """Replace the archive's packed workflow (``workflow/``) with ``workflow_files``.
+
+    Members go in by their full path: the basename matching of :func:`_replace_member` is for
+    the top-level roles, and a packed step's ``obs_data.json`` is not the study's.
+    """
+    prefix = omex_import.WORKFLOW_DIR
+    for name in [n for n in members if n.startswith(prefix)]:
+        del members[name]
+    entries[:] = [e for e in entries if not _relative(e["location"]).startswith(prefix)]
+    for relative, blob in sorted(workflow_files.items()):
+        name = prefix + relative.replace("\\", "/")
+        members[name] = blob
+        entries.append(_entry_for(name))
+
+
 def build_archive(
     *,
     cellml_text: str,
@@ -168,14 +253,32 @@ def build_archive(
     params_bytes: bytes | None = None,
     params_name: str = "params_for_id.json",
     model_name: str = DEFAULT_MODEL_NAME,
+    study: dict | None = None,
+    funcs: dict[str, tuple[str, bytes]] | None = None,
+    workflow_files: dict[str, bytes] | None = None,
+    returned_files: dict[str, bytes] | None = None,
 ) -> tuple[bytes, dict]:
     """Return ``(omex_bytes, report)``.
 
     ``report`` carries the substitution outcome (``updated`` / ``unresolved`` /
     ``outside_parameters``) and ``members``, the names written.
-    """
-    new_cellml, report = substitute_values(cellml_text, values or {})
 
+    ``study`` (``file_prefix``, ``study_name``, ``solver_info``, ...) and ``funcs``
+    (``{kind: (filename, bytes)}``) are the two things a study needs that no other member
+    carries: the settings it is solved with and the user funcs its obs_data and
+    params_for_id name. They travel as a study manifest -- the same document circulatory
+    _autogen writes beside a study's results, declared ``study_manifest.OMEX_FORMAT`` --
+    with its paths pointing at the archive's own members, plus the func files under
+    ``user_funcs/``. Both are CUFLynx's own, so unlike PhLynx's members they are replaced
+    on the way out, never carried through stale.
+
+    ``workflow_files`` (``{path in the pack: bytes}``, from ``pack_workflow``) replaces the
+    source archive's packed workflow; without it one the source archive carries is kept.
+
+    ``returned_files`` (``{name: bytes}``) are top-level members a completed workflow sends
+    back: its target's module array and parameters file with the merged values, which PhLynx
+    re-imports. Each replaces a top-level member of the same name.
+    """
     members: dict[str, bytes] = {}
     entries: list[dict] = []
     parts: dict | None = None
@@ -200,8 +303,19 @@ def build_archive(
                 continue
             entries.append(dict(entry))
 
-    if parts is not None and parts["roles"]["cellml"]:
-        model_member = parts["roles"]["cellml"][0]
+    model_member = parts["roles"]["cellml"][0] if parts and parts["roles"]["cellml"] else None
+    # A modular model (PhLynx's export, #407): the values go into the archive's
+    # own model text and every module and units file leaves as it came, so
+    # PhLynx gets back its own files. A constant that lives in a module file is
+    # not in that text and is reported unresolved.
+    modular = model_member is not None and has_imports(parts["members"][model_member])
+    source_text = parts["members"][model_member].decode("utf-8") if modular else cellml_text
+    new_cellml, report = substitute_values(source_text, values or {})
+
+    if modular:
+        members[model_member] = new_cellml.encode("utf-8")
+        model_out = model_member
+    elif model_member:
         # Exactly one CellML leaves. The others are the master's imports, and
         # CUFLynx's model is the *flattened* document that subsumes them --
         # shipping both would hand PhLynx the same definitions twice, and per
@@ -210,10 +324,7 @@ def build_archive(
         # verbatim, and the flattening is why.
         for extra in parts["roles"]["cellml"][1:]:
             members.pop(extra, None)
-            base = Path(extra).name.lower()
-            entries = [
-                e for e in entries if Path(_relative(e["location"])).name.lower() != base
-            ]
+            entries = [e for e in entries if _relative(e["location"]) != extra]
         _replace_member(members, entries, model_member, model_member, new_cellml.encode("utf-8"))
         model_out = model_member
         # `master` is deliberately left exactly as the source manifest had it. A
@@ -241,10 +352,25 @@ def build_archive(
     if obs_bytes is not None and not (parts and parts["roles"]["obs"]):
         _replace_member(members, entries, None, obs_name, obs_bytes)
 
+    if workflow_files is not None:
+        _embed_workflow(members, entries, workflow_files)
+
+    for name, blob in sorted((returned_files or {}).items()):
+        # by its full location: a packed step's file of the same basename is not this one
+        members[name] = blob
+        entries[:] = [e for e in entries if _relative(e["location"]) != name]
+        entries.append(_entry_for(name))
+
+    if study is not None:
+        _embed_study(members, entries, parts, study, funcs or {}, model_out,
+                     obs_member=_final_member(parts, "obs", obs_name, obs_bytes, members),
+                     params_member=_final_member(parts, "params", params_name, params_bytes,
+                                                 members))
+
     report = {
         "updated": report.get("updated", []),
         "unresolved": report.get("unresolved", []),
-        "outside_parameters": outside_parameter_components(report),
+        "outside_parameters": outside_parameter_components(report, _parameter_components(new_cellml)),
         "model_name": model_out,
         "members": sorted(members),
     }

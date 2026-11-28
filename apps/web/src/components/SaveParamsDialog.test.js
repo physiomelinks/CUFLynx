@@ -31,7 +31,7 @@ function mountDialog(props = {}) {
 
 describe('SaveParamsDialog (#106)', () => {
   it('defaults to manual_params.npy and shows the output dir', () => {
-    const wrapper = mountDialog({ outputDir: '/out' })
+    const wrapper = mountDialog({ workingDir: '/out' })
     const preview = wrapper.get('[data-testid="save-params-preview"]').text()
     expect(preview).toContain('manual_params.npy')
     expect(preview).toContain('/out')

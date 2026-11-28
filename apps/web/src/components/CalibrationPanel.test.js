@@ -25,6 +25,28 @@ const stubs = {
 const selectStubs = { ...stubs, Select: SelectStub }
 
 describe('CalibrationPanel', () => {
+  it("puts the options advancedSettings.json lists under Advanced settings, the rest above", () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        defaults: {
+          methods: [{ value: 'genetic_algorithm', label: 'GA', gradient_based: false, options: [
+            { name: 'num_calls_to_function', type: 'int', default: 100 },
+            { name: 'num_elite', type: 'int', default: 12, debug_default: 4 },
+            { name: 'a_new_ca_option', type: 'int', default: 1 },
+          ] }],
+        },
+      },
+      global: { stubs },
+    })
+    const adv = wrapper.find('[data-testid="calibration-advanced"]')
+    expect(adv.find('[data-testid="calib-opt-num_elite"]').exists()).toBe(true)
+    expect(adv.find('[data-testid="calib-opt-num_calls_to_function"]').exists()).toBe(false)
+    // an option CA adds is a standard setting until the table lists it
+    expect(adv.find('[data-testid="calib-opt-a_new_ca_option"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="calib-opt-a_new_ca_option"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="calib-cores"]').exists()).toBe(true)
+  })
+
   it('renders streamed terminal lines', () => {
     const wrapper = mount(CalibrationPanel, {
       props: { lines: ['generation 0', 'best cost: 0.25'], state: 'running' },
@@ -61,6 +83,18 @@ describe('CalibrationPanel', () => {
     expect(ev[0][0]).toHaveProperty('num_cores')
     // Python interpreter is chosen in the top bar, not this panel.
     expect(ev[0][0]).not.toHaveProperty('python_path')
+  })
+
+  // The engine's dt (Settings, or a study's user_inputs.yaml) is filled in
+  // server-side for a run that names none; a dt sent from here -- seeded from
+  // the defaults fetched at startup -- would override it with a stale value.
+  it('sends no dt, so the run uses the engine dt', async () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: { canRun: true, defaults: { dt: 0.01, methods: [] } },
+      global: { stubs },
+    })
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    expect(wrapper.emitted('run')[0][0]).not.toHaveProperty('dt')
   })
 
   it('disables run when not runnable', () => {
@@ -547,5 +581,31 @@ describe('tour anchors', () => {
   it('marks the settings form', () => {
     const wrapper = mount(CalibrationPanel, { props: { canRun: true }, global: { stubs } })
     expect(wrapper.find('[data-testid="calib-settings"]').exists()).toBe(true)
+  })
+})
+
+describe('CalibrationPanel: a workflow step clicked in the Workflow view', () => {
+  it('fills the method, its options and the start point, and runs with them', async () => {
+    const wrapper = mount(CalibrationPanel, {
+      props: {
+        canRun: true,
+        defaults: {
+          methods: [
+            { value: 'genetic_algorithm', label: 'GA', gradient_based: false,
+              options: [{ name: 'num_calls_to_function', type: 'int', default: 100 }] },
+            { value: 'sp_minimize', label: 'GD', gradient_based: true,
+              options: [{ name: 'max_iterations', type: 'int', default: 20 }] },
+          ],
+        },
+      },
+      global: { stubs },
+    })
+    wrapper.vm.applySettings({ param_id_method: 'sp_minimize', max_iterations: 7,
+                               start_from: 'current', DEBUG: false, unknown_key: undefined })
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-testid="run-calibration"]').trigger('click')
+    expect(wrapper.emitted('run').at(-1)[0]).toMatchObject({
+      param_id_method: 'sp_minimize', max_iterations: 7, start_from: 'current',
+    })
   })
 })

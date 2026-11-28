@@ -110,7 +110,8 @@ def _wait(client, job_id, timeout=15):
 # ---------------------------------------------------------------------------
 def test_calibration_defaults(client):
     body = client.get("/api/calibration/defaults").json()
-    assert body["param_id_method"] == "genetic_algorithm"
+    # param_id_method is CA's default (test_optimiser_budget covers both ways).
+    assert body["param_id_method"] in {m["value"] for m in body["methods"]}
     # methods are introspected from CA's PARAM_ID_METHODS schema (fallback list
     # when CA lacks it): a list of {value, label, gradient_based, ...}.
     methods = body["methods"]
@@ -516,7 +517,7 @@ def test_calibration_streams_and_completes(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     job_id = resp.json()["job_id"]
 
@@ -552,7 +553,7 @@ def test_calibration_config_carries_global_seed(client, tmp_path):
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
     client.post("/api/config", json={"seed": 314})
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
@@ -565,7 +566,7 @@ def test_calibration_config_omits_seed_by_default(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     status, _ = _wait(client, resp.json()["job_id"])
     assert status["state"] == "done"
@@ -591,9 +592,9 @@ def test_calibration_busy_returns_409(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    r1 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    r1 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert r1.status_code == 200
-    r2 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    r2 = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     assert r2.status_code == 409
     # cancel the running job
     job_id = r1.json()["job_id"]
@@ -609,7 +610,7 @@ def test_calibration_progress_endpoint(client, tmp_path):
     model_id = _setup_model_obs_params(
         client, LV_MODEL_PATH, LV_OBS_DATA_PATH, LV_PARAMS_CSV_PATH
     )
-    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {}})
+    resp = client.post("/api/calibration/run", json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "working_dir": str(tmp_path)}})
     job_id = resp.json()["job_id"]
     _wait(client, job_id)
 
@@ -729,7 +730,7 @@ def test_calibration_config_outputs_dir_must_be_absolute(client, tmp_path):
 # Integration tier (real Myokit — short GA on 3compartment)
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
-def test_calibration_3compartment_genetic_algorithm(client, requires_simulation):
+def test_calibration_3compartment_genetic_algorithm(client, requires_simulation, tmp_path):
     model_id = _setup_model_obs_params(
         client, C3_MODEL_PATH, C3_OBS_DATA_PATH, C3_PARAMS_CSV_PATH
     )
@@ -741,7 +742,7 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
         "dt": 0.01,
     }
     resp = client.post(
-        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+        "/api/calibration/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
     job_id = resp.json()["job_id"]
@@ -763,7 +764,7 @@ def test_calibration_3compartment_genetic_algorithm(client, requires_simulation)
 @pytest.mark.integration
 def test_calibration_saves_calibrated_model_that_reloads_with_best_fit(
     client, requires_simulation
-):
+, tmp_path):
     """#114 end-to-end: after a real calibration, the saved calibrated CellML has the
     best-fit values baked in, and re-uploading it (a "new window") reloads slider
     initial values equal to the best fit — the exact scenario that was broken."""
@@ -780,7 +781,7 @@ def test_calibration_saves_calibrated_model_that_reloads_with_best_fit(
         "dt": 0.01,
     }
     resp = client.post(
-        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+        "/api/calibration/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, resp.json()["job_id"], timeout=600)
@@ -789,7 +790,7 @@ def test_calibration_saves_calibrated_model_that_reloads_with_best_fit(
 
     # 1. The calibrated CellML was saved on finish.
     cal_path = status["calibrated_model_path"]
-    assert cal_path and Path(cal_path).is_file(), "calibrated model was not saved"
+    assert cal_path and Path(cal_path).is_file(), "calibrated model was not saved:\n" + "\n".join(lines[-40:])
 
     # 2. Its parameter values equal the best fit (values baked into the model).
     meta = parse_cellml(Path(cal_path).read_bytes())
@@ -865,7 +866,7 @@ def test_best_fit_start_without_a_prior_fit_returns_422(client):
     assert "best fit" in resp.json()["detail"].lower()
 
 
-def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch):
+def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch, tmp_path):
     """start_from='best_fit' feeds the runner config the last completed calibration's
     best fit (from calibration.last_completed_best_params), so a stopped run can be
     continued (#83)."""
@@ -886,7 +887,7 @@ def test_best_fit_start_supplies_last_completed_best_params(client, monkeypatch)
 
     resp = client.post(
         "/api/calibration/run",
-        json={"model_id": model_id, "settings": {"start_from": "best_fit"}},
+        json={"model_id": model_id, "settings": {"working_dir": str(tmp_path), "start_from": "best_fit"}},
     )
     assert resp.status_code == 200, resp.text
     assert captured["config"]["best_fit_params"] == best
@@ -1167,7 +1168,7 @@ def test_version_banners_are_read_as_the_mpi_they_name(banner, family):
 
 
 @pytest.mark.integration
-def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_simulation):
+def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_simulation, tmp_path):
     """Issue #181, end to end on the model it was reported against.
 
     After a calibration, "Reset to best fit" puts CA's own best parameters on
@@ -1198,7 +1199,7 @@ def test_the_output_plots_cost_matches_the_calibrations_own(client, requires_sim
         "seed": 0,
     }
     resp = client.post(
-        "/api/calibration/run", json={"model_id": model_id, "settings": settings}
+        "/api/calibration/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}}
     )
     assert resp.status_code == 200, resp.text
     status, lines = _wait(client, resp.json()["job_id"], timeout=600)
@@ -1294,23 +1295,54 @@ def test_result_modifiers_carry_theta_at_the_anchor():
     }]
 
 
-def test_expanded_best_fit_writes_physical_values(requires_params_csv):
-    """theta=1.5 over baselines [2, 4] -> 3.0 / 6.0 at the targets; the free
-    slot passes through. The arithmetic is CA's expand_modifier_param_vals, not
-    a reimplementation."""
-    import calibration_runner as cr
+# --- the calibrated model under CA #650 ------------------------------------------------
 
-    out = cr._expanded_best_fit(_MOD_INFO, [["x/k"], ["a/C", "b/C"]], [7.0, 1.5])
-    assert out == {"x/k": 7.0, "a/C": 3.0, "b/C": 6.0}
+def _runner():
+    import calibration_runner
+    return calibration_runner
 
 
-def test_unresolved_baselines_refuse_to_pose_as_physical_values(requires_params_csv):
-    """Baselines still None means the expansion cannot run -- raising here is
-    what stops theta being baked into a calibrated CellML as if it were a
-    compliance."""
-    import calibration_runner as cr
+def test_ca_writes_the_calibrated_model_when_it_can(tmp_path):
+    """A CA with ``write_calibrated_model`` writes ``<prefix>_calibrated.cellml`` (and the
+    manifest's ``model``) itself; CUFLynx reports the path it returns."""
+    out = tmp_path / "lv_calibrated.cellml"
+    seen = {}
 
-    info = {"modifiers": [{"index": 0, "name": "s", "operation": "scale",
-                           "targets": ["a/C"], "baselines": None}]}
-    with pytest.raises(ValueError, match="baselines"):
-        cr._expanded_best_fit(info, [["a/C"]], [1.5])
+    class Engine:
+        def write_calibrated_model(self, cellml_path=None, output_dir=None):
+            seen.update(cellml_path=cellml_path, output_dir=output_dir)
+            out.write_text("<model/>")
+            return str(out)
+
+    got = _runner()._ca_write_calibrated_model(
+        Engine(), {"cellml_path": str(LV_MODEL_PATH)}, str(tmp_path))
+    assert got == str(out)
+    assert seen == {"cellml_path": str(LV_MODEL_PATH), "output_dir": str(tmp_path)}
+
+
+def test_a_ca_without_the_calibrated_model_writer_says_which_one_is_needed(tmp_path, capsys):
+    """No fallback writer: CUFLynx's own was removed (R-0013), users upgrade CA. The run
+    log names the version that writes the calibrated model."""
+    runner = _runner()
+    assert runner._ca_write_calibrated_model(
+        object(), {"cellml_path": str(LV_MODEL_PATH)}, str(tmp_path)) is None
+    out = capsys.readouterr().out
+    assert "ERROR:" in out and "libcuflynx 0.8.0" in out and "#650" in out
+    assert not list(tmp_path.iterdir())
+    assert not hasattr(runner, "_write_calibrated_cellml")
+
+
+def test_a_failing_ca_writer_is_reported_and_keeps_the_calibration(tmp_path, capsys):
+    class Engine:
+        def write_calibrated_model(self, **kwargs):
+            raise RuntimeError("boom")
+
+    assert _runner()._ca_write_calibrated_model(
+        Engine(), {"cellml_path": str(LV_MODEL_PATH)}, str(tmp_path)) is None
+    assert "could not write the calibrated model: boom" in capsys.readouterr().out
+
+
+def test_a_model_that_is_not_cellml_has_no_calibrated_model(tmp_path, capsys):
+    assert _runner()._ca_write_calibrated_model(
+        object(), {"cellml_path": "model.py"}, str(tmp_path)) is None
+    assert capsys.readouterr().out == ""

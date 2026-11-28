@@ -95,6 +95,9 @@ export function useCalibration(options = {}) {
   const percentError = ref(null) // [number] one per observable
   const stdError = ref(null) // [number] one per observable
   const errorLabels = ref([]) // display names, one per observable
+  // The best fit against the obs_data's held-out data (CA #535), or null when it
+  // held none: {items: [...]} as CA's validation_results.json has it.
+  const validation = ref(null)
 
   let jobId = null
   const jobIdRef = ref(null) // reactive mirror of jobId for computed URLs
@@ -123,6 +126,7 @@ export function useCalibration(options = {}) {
     percentError.value = null
     stdError.value = null
     errorLabels.value = []
+    validation.value = null
   }
 
   /**
@@ -194,6 +198,7 @@ export function useCalibration(options = {}) {
         percentError.value = s.percent_error
         stdError.value = s.std_error
         errorLabels.value = s.error_labels ?? []
+        validation.value = s.validation ?? null
         error.value = s.error || ''
         state.value = s.state
       }
@@ -213,6 +218,33 @@ export function useCalibration(options = {}) {
         /* best effort */
       }
       state.value = 'cancelled'
+      timer = setTimeout(followStopped, intervalMs)
+    }
+  }
+
+  /**
+   * A stopped run's best-so-far error vectors are written after it stops (the server
+   * says `errors_pending` until then): keep reading its status until they are, for the
+   * Analysis tab's error bars.
+   */
+  async function followStopped() {
+    timer = null
+    if (!jobId) return
+    try {
+      const s = await getCalibrationStatus(jobId, offset)
+      if (s.lines?.length) {
+        lines.value = lines.value.concat(s.lines)
+        offset = s.next_offset
+      }
+      if (s.errors_pending) {
+        timer = setTimeout(followStopped, intervalMs)
+        return
+      }
+      percentError.value = s.percent_error ?? null
+      stdError.value = s.std_error ?? null
+      errorLabels.value = s.error_labels ?? []
+    } catch {
+      /* the job is gone: the stopped run stands without its errors */
     }
   }
 
@@ -242,6 +274,7 @@ export function useCalibration(options = {}) {
     percentError,
     stdError,
     errorLabels,
+    validation,
     running,
     applyProgress,
     start,

@@ -29,6 +29,26 @@ from runtime_paths import (
 )
 
 RUNNER_PATH = str(runner_path("calibration_runner.py"))
+#: What runs a study-workflow step (``study_workflow``) for every analysis manager.
+WORKFLOW_RUNNER_PATH = str(runner_path("workflow_runner.py"))
+
+
+def study_read_dir(config: dict, subdir: str) -> str | None:
+    """Where a study-workflow step's results are read (``<step dir>/<subdir>``), or None
+    for a direct run."""
+    step = config.get("study_step")
+    return os.path.join(step["step_dir"], subdir) if step else None
+
+
+def study_popen_kwargs(config: dict) -> dict:
+    """A study-workflow step runs in the workflow's run directory, as a Workflow-tab run
+    does (``workflow_manager.start``): an explicit working directory, since the server's own
+    can be a Myokit build directory that is about to be deleted."""
+    step = config.get("study_step")
+    if not step:
+        return {}
+    os.makedirs(step["run_dir"], exist_ok=True)
+    return {"cwd": step["run_dir"]}
 
 
 def _warn_no_mpiexec(num_cores: int) -> None:
@@ -177,7 +197,7 @@ def read_meta_line(lines: list, marker: str) -> dict:
 def write_run_config(config: dict, filename: str) -> str:
     """Write a runner's config payload and return the path to hand it as argv[1].
 
-    Into a private temp directory, **not** the user's outputs directory. Nothing
+    Into a private temp directory, **not** the user's working dir. Nothing
     ever reads this file back: it exists only because a config dict cannot be
     passed on a command line, and because every MPI rank has to read it at
     startup (``build_command`` prepends ``mpiexec -n N``), which rules out a pipe.
@@ -516,6 +536,9 @@ class CalibrationJob:
         self.percent_error: list | None = None
         self.std_error: list | None = None
         self.error_labels: list = []
+        # The best fit scored against the obs_data's held-out data (CA #535):
+        # CA's validation_results.json, or None when there was nothing to validate.
+        self.validation: dict | None = None
         self.error: str | None = None
         # Set when the run finished but its process failed on the way out (an
         # MPI finalize abort, say): the results stand, and the user is told.
@@ -528,12 +551,24 @@ class CalibrationJob:
         self.file_prefix: str | None = None
         # When the run started; results older than this belong to a previous one.
         self.started_at: float | None = None
+        # The study-workflow step this run is ({workflow, run_dir, step, steps, step_dir}),
+        # or None for a direct run.
+        self.study_step: dict | None = None
+        # Where the calibrated CellML is (the step dir for a workflow step).
+        self.model_dir: str = output_dir
+        # The run's config, so a stopped run's error vectors can be written from it.
+        self.config: dict = {}
+        # A stopped run whose best-so-far error vectors are still being written; the
+        # process writing them.
+        self.errors_pending = False
+        self.errors_proc: subprocess.Popen | None = None
         self.lock = threading.Lock()
 
 
 class CalibrationManager:
     def __init__(self):
         self.runner_path = RUNNER_PATH
+        self.study_runner_path = WORKFLOW_RUNNER_PATH
         self.python = default_python()
         self._job: CalibrationJob | None = None
         self._lock = threading.Lock()
@@ -543,8 +578,9 @@ class CalibrationManager:
         with self._lock:
             job = self._job
             self._job = None
-        if job and job.proc and job.proc.poll() is None:
-            job.proc.terminate()
+        for proc in (job.proc, job.errors_proc) if job else ():
+            if proc and proc.poll() is None:
+                proc.terminate()
 
     @property
     def busy(self) -> bool:
@@ -565,6 +601,16 @@ class CalibrationManager:
             return None
         return job.best_params or None
 
+    def last_completed_step(self, model_id: str, finished_only: bool = True) -> dict | None:
+        """The study-workflow step of the most recent calibration of ``model_id`` that
+        finished, or None. A step stopped early has no step result, so it counts only with
+        ``finished_only=False``."""
+        job = self._job
+        states = ("done",) if finished_only else ("done", "cancelled")
+        if job is None or job.model_id != model_id or job.state not in states:
+            return None
+        return job.study_step
+
     def build_command(self, config: dict, config_path: str) -> list[str]:
         """Single-process by default; ``mpiexec -n N`` when num_cores > 1.
 
@@ -582,7 +628,8 @@ class CalibrationManager:
         # An explicit interpreter runs the runner script; with none, the frozen app
         # runs it in-process (runner mode) and from source uses the serving Python.
         python = config.get("python") or self.python
-        base = runner_command(python, self.runner_path, config_path)
+        script = self.study_runner_path if config.get("study_step") else self.runner_path
+        base = runner_command(python, script, config_path)
         num_cores = int(config.get("num_cores", 1) or 1)
         if num_cores > 1:
             mpiexec = resolve_mpiexec(python)
@@ -596,22 +643,37 @@ class CalibrationManager:
         with self._lock:
             if self.busy:
                 raise RuntimeError("a calibration job is already running")
+            previous = self._job
+            if previous and previous.errors_proc and previous.errors_proc.poll() is None:
+                # a new run removes the stopped one's results; its errors are not wanted now
+                previous.errors_proc.terminate()
             output_dir = config["output_dir"]
             os.makedirs(output_dir, exist_ok=True)
-            # A reused output_dir may hold a previous run's progress history; clear
-            # it so this run's live plots start fresh instead of reading stale data.
-            ca_run_history.clear_run_history(output_dir)
+            # A workflow step's results are read from its param_id dir, which CA empties
+            # when the step starts.
+            read_dir = study_read_dir(config, "param_id")
+            if read_dir is None:
+                # A reused output_dir may hold a previous run's progress history; clear
+                # it so this run's live plots start fresh instead of reading stale data.
+                ca_run_history.clear_run_history(output_dir)
             config_path = write_run_config(config, "calib_config.json")
 
             job = CalibrationJob(
-                uuid.uuid4().hex, output_dir, config.get("model_id"), config.get("params_path"),
+                uuid.uuid4().hex, read_dir or output_dir, config.get("model_id"),
+                config.get("params_path"),
             )
             job.config_path = config_path
+            job.study_step = config.get("study_step")
+            job.config = dict(config)
             # Both halves of the calibrated model's filename are known here, so
-            # the path never has to be round-tripped back from the runner.
+            # the path never has to be round-tripped back from the runner. CA names a
+            # workflow step's <step>_calibrated.cellml, in the step dir.
             job.file_prefix = config.get("file_prefix")
+            if job.study_step:
+                job.file_prefix = job.study_step["step"]
+                job.model_dir = job.study_step["step_dir"]
             # When this run started, so a previous run's results left in the same
-            # outputs directory cannot be reported as this one's.
+            # working dir cannot be reported as this one's.
             job.started_at = time.time()
             env = runner_launch_env(config.get("python") or self.python)
             job.proc = subprocess.Popen(
@@ -621,8 +683,10 @@ class CalibrationManager:
                 text=True,
                 bufsize=1,
                 env=env,
+                **study_popen_kwargs(config),
             )
             self._job = job
+            job.lines.extend(config.get("log_preamble") or [])
 
         threading.Thread(target=self._reader, args=(job,), daemon=True).start()
         return job.id
@@ -645,6 +709,52 @@ class CalibrationManager:
             # dir, since the cleanup has already happened.
             clear_run_config(job.config_path)
             self._finalize(job, code)
+            if job.state == "cancelled":
+                self._stopped_errors(job)
+
+    def _read_errors(self, job: CalibrationJob) -> None:
+        errors = ca_run_history.error_vectors(job.output_dir)
+        with job.lock:
+            job.percent_error = errors["percent_error"]
+            job.std_error = errors["std_error"]
+            job.error_labels = errors["error_labels"]
+
+    def _stopped_errors(self, job: CalibrationJob) -> None:
+        """The error vectors of a stopped run's best so far. Stopping terminates the runner,
+        so CA never gets to write them (it does on an interrupt it sees, and on a finished
+        run): the runner is run again in ``best_fit_errors_only`` mode, which rebuilds the
+        run's CA object and has it write them from ``best_param_vals.npy``. ``errors_pending``
+        stays set until then, so the panel waits for them."""
+        try:
+            if job.best_params is None or job.study_step:
+                # nothing was saved to write them from; or a study-workflow step, whose
+                # config is the workflow runner's, not one a CA object can be built from
+                return
+            if not ca_run_history.has_error_vectors(job.output_dir, job.started_at):
+                config = {**job.config, "best_fit_errors_only": True, "num_cores": 1}
+                path = write_run_config(config, "calib_errors_config.json")
+                python = config.get("python") or self.python
+                try:
+                    proc = subprocess.Popen(
+                        runner_command(python, self.runner_path, path),
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                        bufsize=1, env=runner_launch_env(python),
+                    )
+                    job.errors_proc = proc
+                    assert proc.stdout is not None
+                    for line in proc.stdout:
+                        with job.lock:
+                            job.lines.append(line.rstrip("\n"))
+                    proc.wait()
+                finally:
+                    clear_run_config(path)
+            if ca_run_history.has_error_vectors(job.output_dir, job.started_at):
+                self._read_errors(job)
+        except Exception as exc:  # noqa: BLE001 - the stopped run stands without them
+            with job.lock:
+                job.lines.append(f"warning: the best-so-far error vectors were not written: {exc}")
+        finally:
+            job.errors_pending = False
 
     def _finalize(self, job: CalibrationJob, code: int) -> None:
         with job.lock:
@@ -677,8 +787,9 @@ class CalibrationManager:
                     job.percent_error = errors["percent_error"]
                     job.std_error = errors["std_error"]
                     job.error_labels = errors["error_labels"]
+                    job.validation = ca_run_history.validation_results(job.output_dir)
                     job.calibrated_model_path = ca_run_history.calibrated_model_path(
-                        job.output_dir, job.file_prefix
+                        job.model_dir, job.file_prefix
                     )
                     job.state = "done"
                     if code != 0:
@@ -708,8 +819,12 @@ class CalibrationManager:
                 "percent_error": job.percent_error,
                 "std_error": job.std_error,
                 "error_labels": job.error_labels,
+                "validation": job.validation,
+                # a stopped run's error vectors are still being written: poll again
+                "errors_pending": job.errors_pending,
                 "error": job.error,
                 "warning": job.warning,
+                "study_step": job.study_step,
             }
 
     def progress(self, job_id: str) -> dict | None:
@@ -732,6 +847,8 @@ class CalibrationManager:
         with job.lock:
             if job.state == "running":
                 job.state = "cancelled"
+                # its best-so-far error vectors follow (_stopped_errors)
+                job.errors_pending = True
                 if job.proc and job.proc.poll() is None:
                     job.proc.terminate()
         return True

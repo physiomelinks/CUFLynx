@@ -227,7 +227,7 @@ def _assert_parallelism(seen, num_cores):
 @pytest.mark.parametrize("num_cores", [1, PARALLEL_CORES], ids=["one-core", "four-cores"])
 def test_local_sensitivity_stays_single_process_whatever_num_cores_says(
     client, requires_simulation, num_cores, recorded_commands
-):
+, tmp_path):
     """Local (finite-difference) SA must run in one process even when asked for four.
 
     This is deliberate, not a limitation to route around: ``main.py`` forces
@@ -258,7 +258,7 @@ def test_local_sensitivity_stays_single_process_whatever_num_cores_says(
     # Nested under "settings": the endpoint reads req.settings, so a flat body is
     # accepted with a 200 and every value silently ignored.
     resp = client.post(
-        "/api/sensitivity/run", json={"model_id": model_id, "settings": settings})
+        "/api/sensitivity/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
 
     state, lines = _wait(client, "sensitivity", resp.json()["job_id"], timeout=900)
@@ -277,7 +277,7 @@ def test_local_sensitivity_stays_single_process_whatever_num_cores_says(
 @pytest.mark.integration
 @pytest.mark.parametrize("num_cores", [1, PARALLEL_CORES], ids=["serial", "parallel"])
 def test_calibration_runs_serial_and_parallel(client, requires_simulation, num_cores,
-                                              recorded_commands):
+                                              recorded_commands, tmp_path):
     """A real genetic-algorithm calibration at one core and at four.
 
     This is the configuration the reported crash was in: a four-rank 3compartment
@@ -305,7 +305,7 @@ def test_calibration_runs_serial_and_parallel(client, requires_simulation, num_c
         "num_cores": num_cores,
     }
     resp = client.post(
-        "/api/calibration/run", json={"model_id": model_id, "settings": settings})
+        "/api/calibration/run", json={"model_id": model_id, "settings": {**settings, "working_dir": str(tmp_path)}})
     assert resp.status_code == 200, resp.text
     job_id = resp.json()["job_id"]
 

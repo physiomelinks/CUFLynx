@@ -23,6 +23,9 @@ export function errorMessage(e) {
   const data = res?.data
   const detail = typeof data === 'string' ? data : data?.detail
   if (typeof detail === 'string' && detail.trim()) return detail
+  // A refusal that carries more than its message (a workflow step's unset
+  // parameters, a stopped live run's 409).
+  if (typeof detail?.message === 'string' && detail.message.trim()) return detail.message
   // 422s from FastAPI validation arrive as a list of {loc, msg} objects.
   if (Array.isArray(detail) && detail.length) {
     return detail.map((d) => d?.msg || JSON.stringify(d)).join('; ')
@@ -51,14 +54,14 @@ export async function makeDir(parent, name) {
 }
 
 /**
- * Runtime config. `outputsDir` is optional and only affects
+ * Runtime config. `workingDir` is optional and only affects
  * `param_modifier_operations`: a modifier the user wrote themselves lives under
- * the outputs directory, so without it their own modifiers are missing from the
+ * the working dir, so without it their own modifiers are missing from the
  * params editor's list.
  */
-export async function getConfig(outputsDir = '') {
+export async function getConfig(workingDir = '') {
   const { data } = await axios.get(url('/api/config'), {
-    params: outputsDir ? { output_dir: outputsDir } : {},
+    params: workingDir ? { working_dir: workingDir } : {},
   })
   return data
 }
@@ -87,6 +90,8 @@ export async function setConfig(opts = {}) {
     if (opts.seed !== undefined) body.seed = opts.seed
     // Where "Edit" sends a study: a URL sets it, '' restores production PhLynx.
     if (opts.phlynxUrl != null) body.phlynx_url = opts.phlynxUrl
+    // Module libraries a calibration workflow's library modules are found in; [] clears.
+    if (opts.moduleLibraryDirs != null) body.module_library_dirs = opts.moduleLibraryDirs
   }
   const { data } = await axios.post(url('/api/config'), body)
   return data
@@ -95,7 +100,7 @@ export async function setConfig(opts = {}) {
 // Accepts a single File or an array of Files (a non-flattened model + its sister
 // files). Multiple files go under the `files` field, which the server flattens
 // to one CellML 2.0 model; a single file uses `file` (back-compatible).
-export async function uploadCellML(fileOrFiles, outputDir = '') {
+export async function uploadCellML(fileOrFiles, workingDir = '') {
   const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles]
   const form = new FormData()
   if (files.length === 1) {
@@ -106,7 +111,7 @@ export async function uploadCellML(fileOrFiles, outputDir = '') {
   // A dropped Myokit model is converted to CellML server-side (#27); the output
   // dir is where the converted file is kept for the user.
   const { data } = await axios.post(url('/api/models/upload'), form, {
-    params: outputDir ? { output_dir: outputDir } : {},
+    params: workingDir ? { working_dir: workingDir } : {},
   })
   return data
 }
@@ -120,18 +125,18 @@ export async function uploadCellML(fileOrFiles, outputDir = '') {
  * editor, which only a local backend can do. This is the read-only half, and the
  * one a remote or headless deployment can still offer.
  *
- * `outputsDir` makes it serve the study's copy when there is one, so the tab and
+ * `workingDir` makes it serve the study's copy when there is one, so the tab and
  * the editor never show different versions of the same model.
  *
  * 404s for a plain CellML model, which is edited in PhLynx instead.
  */
-export function modelSourceUrl(modelId, outputsDir = '') {
+export function modelSourceUrl(modelId, workingDir = '') {
   const base = url(`/api/models/${encodeURIComponent(modelId)}/source`)
-  return outputsDir ? `${base}?config_outputs_dir=${encodeURIComponent(outputsDir)}` : base
+  return workingDir ? `${base}?working_dir=${encodeURIComponent(workingDir)}` : base
 }
 
 /**
- * Put the model's source under the outputs directory and open it in the user's
+ * Put the model's source under the working dir and open it in the user's
  * editor, on the machine the backend runs on.
  *
  * Returns `{path, filename, opened, editor, reason, runs}`. `opened: false` is a
@@ -140,12 +145,12 @@ export function modelSourceUrl(modelId, outputsDir = '') {
  * that copy is the file CUFLynx simulates (true for a `.py`; a `.mmt` is the
  * source of a CellML that runs in its place).
  *
- * 422s when no outputs directory is set: there is nowhere the edit could safely
+ * 422s when no working dir is set: there is nowhere the edit could safely
  * live, and a temp directory is exactly what this replaced.
  */
-export async function editModelSource(modelId, outputsDir = '') {
+export async function editModelSource(modelId, workingDir = '') {
   const { data } = await axios.post(url(`/api/models/${encodeURIComponent(modelId)}/edit`), {
-    config_outputs_dir: outputsDir || '',
+    working_dir: workingDir || '',
   })
   return data
 }
@@ -182,7 +187,7 @@ export async function simulate(modelId, params, options = {}) {
   if (options.outputs != null) body.outputs = options.outputs
   // Locates the user's custom operation funcs so a data_item's series_output
   // overlay can be computed (issue #111).
-  if (options.outputsDir) body.config_outputs_dir = options.outputsDir
+  if (options.workingDir) body.working_dir = options.workingDir
   // "Everything you can" rather than a specific list: unresolvable names are
   // skipped instead of failing the run (#150).
   if (options.bestEffortOutputs) body.best_effort_outputs = true
@@ -190,11 +195,29 @@ export async function simulate(modelId, params, options = {}) {
   return data
 }
 
+/**
+ * Why a live run answered without a result: 'superseded' (a newer live run took
+ * the worker) or 'cancelled', or null for any other failure.
+ */
+export function liveRunStopped(e) {
+  if (e?.response?.status !== 409) return null
+  return e.response.data?.detail?.stopped ?? null
+}
+
+/**
+ * Stop the live run in flight. Resolves to {cancelled, reason?}: only a run in
+ * the simulation worker (a Python chosen in Settings) can be stopped.
+ */
+export async function cancelLiveRun() {
+  const { data } = await axios.post(url('/api/simulate/cancel'))
+  return data
+}
+
 export async function runProtocol(modelId, params, options = {}) {
   const body = { model_id: modelId, params }
   if (options.protocolInfo != null) body.protocol_info = options.protocolInfo
   if (options.outputs != null) body.outputs = options.outputs
-  if (options.outputsDir) body.config_outputs_dir = options.outputsDir
+  if (options.workingDir) body.working_dir = options.workingDir
   const { data } = await axios.post(url('/api/protocol/run'), body)
   return data
 }
@@ -219,7 +242,7 @@ export async function costSensitivity(modelId, params, options = {}) {
   if (options.preTime != null) body.pre_time = options.preTime
   if (options.outputs != null) body.outputs = options.outputs
   if (options.protocolInfo != null) body.protocol_info = options.protocolInfo
-  if (options.outputsDir) body.config_outputs_dir = options.outputsDir
+  if (options.workingDir) body.working_dir = options.workingDir
   const { data } = await axios.post(url('/api/cost_sensitivity'), body, {
     signal: options.signal,
   })
@@ -249,7 +272,11 @@ export async function costAtParams(modelId, params, options = {}) {
   if (options.preTime != null) body.pre_time = options.preTime
   if (options.outputs != null) body.outputs = options.outputs
   if (options.protocolInfo != null) body.protocol_info = options.protocolInfo
-  if (options.outputsDir) body.config_outputs_dir = options.outputsDir
+  if (options.workingDir) body.working_dir = options.workingDir
+  // Which emulator to score with, when the study holds several. Without it the
+  // backend falls back to its default, and the emulator cost shown beside the
+  // model's would belong to a bundle the user did not choose.
+  if (options.emulatorDir) body.emulator_dir = options.emulatorDir
   const { data } = await axios.post(url('/api/cost_at_params'), body, {
     signal: options.signal,
   })
@@ -258,11 +285,22 @@ export async function costAtParams(modelId, params, options = {}) {
 
 // Load a whole COMBINE archive (.omex): model + obs_data + params_for_id (#149).
 // One request, because an archive is the study rather than any one of its files.
-export async function uploadOmex(file, outputDir = '') {
+export async function uploadOmex(file, workingDir = '') {
   const form = new FormData()
   form.append('file', file)
   const { data } = await axios.post(url('/api/omex/upload'), form, {
-    params: outputDir ? { output_dir: outputDir } : {},
+    params: workingDir ? { working_dir: workingDir } : {},
+  })
+  return data
+}
+
+// Adopt a libcuflynx user_inputs.yaml's solver settings (solver, solver_info,
+// dt). Returns the config payload plus `solver_settings` and `warnings`.
+export async function uploadUserInputs(file, workingDir = '') {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await axios.post(url('/api/user_inputs/upload'), form, {
+    params: workingDir ? { working_dir: workingDir } : {},
   })
   return data
 }
@@ -271,14 +309,22 @@ export async function uploadOmex(file, outputDir = '') {
 // It is *staged*, not imported: CORS stops a page reading our responses, not
 // sending requests, so the confirmation in the UI is the security control and
 // these three calls are what drives it.
+//
+// `peekInbox` throws an error with `deliveryFailed: true` when a cuflynx:// link
+// could not be opened (the server reports that once, on the next poll).
 export async function peekInbox() {
   const { data } = await axios.get(url('/api/inbox'))
+  if (data.error) {
+    const err = new Error(data.error.message || 'A cuflynx:// link could not be opened')
+    err.deliveryFailed = true
+    throw err
+  }
   return data.pending
 }
 
-export async function acceptInbox(outputDir = '') {
+export async function acceptInbox(workingDir = '') {
   const { data } = await axios.post(url('/api/inbox/accept'), null, {
-    params: outputDir ? { output_dir: outputDir } : {},
+    params: workingDir ? { working_dir: workingDir } : {},
   })
   return data
 }
@@ -289,7 +335,7 @@ export async function rejectInbox() {
 }
 
 // `save` (#215) asks the server to also write the dated copy where the study
-// lives — { outputsDir, filename } — instead of the browser downloading it.
+// lives — { workingDir, filename } — instead of the browser downloading it.
 // Omitted for a plain upload, which already has a file on disk.
 // Build the study as a COMBINE archive for PhLynx (#290). The server assembles
 // and base64s it, so the writer lives in one place and the frontend keeps
@@ -299,12 +345,12 @@ export async function rejectInbox() {
 // for `WKNavigationTypeLinkActivated`, so a scripted `window.open` was silently
 // dropped and the packaged Mac app sent nothing (#340).
 // `source` is 'current' | 'best_fit' | 'as_imported'.
-export async function sendToPhlynx(modelId, { source = 'current', values = {}, outputDir = '' } = {}) {
+export async function sendToPhlynx(modelId, { source = 'current', values = {}, workingDir = '' } = {}) {
   const { data } = await axios.post(url('/api/phlynx/send'), {
     model_id: modelId,
     source,
     values,
-    output_dir: outputDir,
+    working_dir: workingDir,
   })
   return data
 }
@@ -313,19 +359,33 @@ export async function uploadObsData(modelId, obsData, save = null) {
   const { data } = await axios.post(
     url('/api/obs_data/upload'),
     { model_id: modelId, obs_data: obsData },
-    { params: save?.filename ? { filename: save.filename, output_dir: save.outputsDir || '' } : {} },
+    { params: save?.filename ? { filename: save.filename, working_dir: save.workingDir || '' } : {} },
   )
   return data
+}
+
+/** The study's obs_data as its file holds it, every key (null when it has none). */
+export async function getObsDataDocument(modelId) {
+  const { data } = await axios.get(url('/api/obs_data/document'), { params: { model_id: modelId } })
+  return data.document
+}
+
+/**
+ * A workflow step's unset parameters, from a refusal ({step_id, names}), or null: the
+ * parameters nothing gives a value, which a protocol in the step's obs_data sets.
+ */
+export function unsetParameters(e) {
+  return e?.response?.data?.detail?.unset_parameters ?? null
 }
 
 // Operation (obs_funcs) + cost_type (cost_func) option lists, sourced from
 // circulatory_autogen — used to populate the obs_data editor dropdowns. Pass
 // refresh=true to re-introspect CA (e.g. after adding a custom operation), and
-// outputDir so the user's custom funcs (stored there) appear in the lists.
-export async function getObsDataOptions(refresh = false, outputDir = '') {
+// workingDir so the user's custom funcs (stored there) appear in the lists.
+export async function getObsDataOptions(refresh = false, workingDir = '') {
   const params = {}
   if (refresh) params.refresh = true
-  if (outputDir) params.output_dir = outputDir
+  if (workingDir) params.working_dir = workingDir
   const { data } = await axios.get(url('/api/obs_data/options'), { params })
   return data
 }
@@ -333,29 +393,29 @@ export async function getObsDataOptions(refresh = false, outputDir = '') {
 // User-authored observable operation & cost funcs (issues #58 / #104). CUFLynx
 // saves them to a file in the user's output directory and points CA at it (CA
 // #303). `kind` is 'operation' or 'cost' -> /api/{operation,cost}_funcs;
-// `outputDir` is where the funcs live (config_outputs_dir).
+// `workingDir` is where the funcs live (working_dir).
 const FUNC_ENDPOINT = { operation: 'operation_funcs', cost: 'cost_funcs' }
 
-export async function getUserFuncs(kind = 'operation', outputDir = '') {
+export async function getUserFuncs(kind = 'operation', workingDir = '') {
   const { data } = await axios.get(url(`/api/${FUNC_ENDPOINT[kind]}`), {
-    params: outputDir ? { output_dir: outputDir } : {},
+    params: workingDir ? { working_dir: workingDir } : {},
   })
   return data
 }
 
-export async function saveUserFunc(kind, name, source, outputDir = '') {
+export async function saveUserFunc(kind, name, source, workingDir = '') {
   const { data } = await axios.post(url(`/api/${FUNC_ENDPOINT[kind]}`), {
     name,
     source,
-    output_dir: outputDir || '',
+    working_dir: workingDir || '',
   })
   return data
 }
 
-export async function deleteUserFunc(kind, name, outputDir = '') {
+export async function deleteUserFunc(kind, name, workingDir = '') {
   const { data } = await axios.delete(
     url(`/api/${FUNC_ENDPOINT[kind]}/${encodeURIComponent(name)}`),
-    { params: outputDir ? { output_dir: outputDir } : {} },
+    { params: workingDir ? { working_dir: workingDir } : {} },
   )
   return data
 }
@@ -370,7 +430,7 @@ export async function uploadParamsForId(file, modelId, save = null) {
   form.append('file', file)
   if (modelId) form.append('model_id', modelId)
   const { data } = await axios.post(url('/api/params_for_id/upload'), form, {
-    params: save?.filename ? { filename: save.filename, output_dir: save.outputsDir || '' } : {},
+    params: save?.filename ? { filename: save.filename, working_dir: save.workingDir || '' } : {},
   })
   return data
 }
@@ -378,12 +438,12 @@ export async function uploadParamsForId(file, modelId, save = null) {
 // Save the current slider values to a named file (issue #106). Format follows the
 // filename extension: `.csv` -> CSV, else numpy `.npy` (default). `order` is the
 // qname order for the npy array. Returns { path }.
-export async function saveParams(values, order, filename, outputDir = '', result = null) {
+export async function saveParams(values, order, filename, workingDir = '', result = null) {
   const { data } = await axios.post(url('/api/params/save'), {
     values,
     order,
     filename,
-    output_dir: outputDir || '',
+    working_dir: workingDir || '',
     // The traces these values produced, stored under the same prefix so the run
     // can be shown again later without re-running it (#126).
     ...(result ? { result } : {}),
@@ -392,9 +452,9 @@ export async function saveParams(values, order, filename, outputDir = '', result
 }
 
 // Saved runs in an output directory (metadata only — no series). Issue #126.
-export async function listSavedRuns(outputDir = '') {
+export async function listSavedRuns(workingDir = '') {
   const { data } = await axios.get(url('/api/runs'), {
-    params: outputDir ? { dir: outputDir } : {},
+    params: workingDir ? { dir: workingDir } : {},
   })
   return data
 }
@@ -455,8 +515,67 @@ export function calibratedModelUrl(jobId) {
   return url(`/api/calibration/${encodeURIComponent(jobId)}/calibrated_model`)
 }
 
+/** Direct URL to a provenance file of the open workflow run (`provenance.svg`,
+ * `provenance_graph.json`); `version` makes a rewritten file a new URL. */
+export function workflowProvenanceUrl(name, version = '') {
+  const v = version !== '' ? `?v=${encodeURIComponent(version)}` : ''
+  return url(`/api/workflow/provenance/${encodeURIComponent(name)}${v}`)
+}
+
 export async function getSensitivityDefaults() {
   const { data } = await axios.get(url('/api/sensitivity/defaults'))
+  return data
+}
+
+// --- Add from dataset: build obs_data from raw recordings -------------------
+
+export async function getObsExtractFormats() {
+  const { data } = await axios.get(url('/api/obs_extract/formats'))
+  return data
+}
+
+// POST rather than GET: it carries an exclude list and per-dataset reader
+// settings, which do not belong in a query string, and a scan must not be
+// served from the browser cache after the directory has changed.
+export async function scanDatasets(payload) {
+  const { data } = await axios.post(url('/api/obs_extract/scan'), payload)
+  return data
+}
+
+export async function loadObsExtractConfig(path) {
+  const { data } = await axios.get(url('/api/obs_extract/config'), {
+    params: { path },
+  })
+  return data
+}
+
+export async function saveObsExtractConfig(config, { workingDir = '', filename } = {}) {
+  const { data } = await axios.post(url('/api/obs_extract/config'), {
+    config,
+    working_dir: workingDir,
+    ...(filename ? { filename } : {}),
+  })
+  return data
+}
+
+export async function startObsExtract(config, { workingDir = '', modelId = '' } = {}) {
+  const { data } = await axios.post(url('/api/obs_extract/run'), {
+    config,
+    working_dir: workingDir,
+    model_id: modelId,
+  })
+  return data
+}
+
+export async function getObsExtractStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/obs_extract/${jobId}/status?offset=${offset}`),
+  )
+  return data
+}
+
+export async function cancelObsExtract(jobId) {
+  const { data } = await axios.post(url(`/api/obs_extract/${jobId}/cancel`))
   return data
 }
 
@@ -476,8 +595,109 @@ export async function getSensitivityStatus(jobId, offset = 0) {
   return data
 }
 
+/**
+ * A Sobol run's design with each sample's status, and its indices' convergence once
+ * written (CA #702): `{ design, convergence }`, each null until CA writes it. `slot` is
+ * 'param_reduction' for a reduction's "Sobol first" run.
+ */
+export async function getSobolProgress(jobId, slot = 'sensitivity') {
+  const { data } = await axios.get(url(`/api/${slot}/${jobId}/sobol-progress`))
+  return data
+}
+
 export async function cancelSensitivity(jobId) {
   const { data } = await axios.post(url(`/api/sensitivity/${jobId}/cancel`))
+  return data
+}
+
+// --- Identifiability tab: parameter reduction + identifiability analysis ------
+
+/** CA's param_reduction and identifiability_analysis descriptors. */
+export async function getIdentifiabilityDefaults() {
+  const { data } = await axios.get(url('/api/identifiability/defaults'))
+  return data
+}
+
+/** Sobol runs a reduction can read: `{ runs: [{ dir, num_samples, has_samples, ... }] }`. */
+export async function listSobolRuns(configOutputsDir = '') {
+  const { data } = await axios.get(url('/api/param_reduction/sobol_runs'), {
+    params: configOutputsDir ? { config_outputs_dir: configOutputsDir } : {},
+  })
+  return data
+}
+
+export async function startParamReduction(modelId, settings, currentParams = null) {
+  const { data } = await axios.post(url('/api/param_reduction/run'), {
+    model_id: modelId,
+    settings,
+    ...(currentParams ? { current_params: currentParams } : {}),
+  })
+  return data
+}
+
+export async function getParamReductionStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/param_reduction/${jobId}/status?offset=${offset}`),
+  )
+  return data
+}
+
+export async function cancelParamReduction(jobId) {
+  const { data } = await axios.post(url(`/api/param_reduction/${jobId}/cancel`))
+  return data
+}
+
+/** The pca reduction's mode heatmap, served by the API (never a blob: URL). */
+export function paramReductionHeatmapUrl(reportDir) {
+  return url(`/api/param_reduction/heatmap?report_dir=${encodeURIComponent(reportDir)}`)
+}
+
+/** Make the reduction's reduced_params_for_id.json the study's params_for_id. */
+export async function adoptReducedParams(modelId, reportDir) {
+  const { data } = await axios.post(url('/api/param_reduction/adopt'), {
+    model_id: modelId,
+    report_dir: reportDir,
+  })
+  return data
+}
+
+// --- Reduced-order models (the Surrogate tab's ROM section) --------------------
+//
+// A ROM is set up by a rom setup file (libcuflynx's rom_setup.schema.json) and built by libcuflynx's
+// `cuflynx-rom setup`; the backend launches it and reads back what it wrote. ROMs are not in the public
+// libcuflynx release yet, so `available: false` with a reason is the normal answer there.
+
+/** `{ available, reason, interpreter }`; `refresh` asks again instead of the cached answer. */
+export async function getRomAvailability(refresh = false) {
+  const { data } = await axios.get(url(`/api/rom/availability${refresh ? '?refresh=true' : ''}`))
+  return data
+}
+
+/** A setup's `{ ok, problems: [{where, message}], description, default_root, has_results }`. */
+export async function checkRomSetup(setup) {
+  const { data } = await axios.post(url('/api/rom/check'), { setup })
+  return data
+}
+
+/** Start `fit` (default) or `runs`; `{ job_id, root }`. */
+export async function startRomRun(setup, { action = 'fit', root = '', methods = null, seed = null } = {}) {
+  const { data } = await axios.post(url('/api/rom/run'), { setup, action, root, methods, seed })
+  return data
+}
+
+export async function getRomStatus(jobId, offset = 0) {
+  const { data } = await axios.get(url(`/api/rom/${jobId}/status?offset=${offset}`))
+  return data
+}
+
+export async function cancelRomRun(jobId) {
+  const { data } = await axios.post(url(`/api/rom/${jobId}/cancel`))
+  return data
+}
+
+/** A finished fit's `{ root, results, rows }` (rows: one per method). */
+export async function getRomResults(root) {
+  const { data } = await axios.get(url(`/api/rom/results?root=${encodeURIComponent(root)}`))
   return data
 }
 
@@ -490,15 +710,21 @@ export async function getEmulatorDefaults() {
 }
 
 /**
- * The trained emulator for this study, if any: `{ emulator_dir, metadata }`.
- * `metadata` is null when nothing has been trained yet, which is the normal
- * starting state rather than an error.
+ * The trained emulator for this study, if any: `{ emulator_dir, metadata,
+ * choices, chosen }`. `metadata` is null when nothing has been trained yet, which
+ * is the normal starting state rather than an error.
+ *
+ * `choices` is every bundle the study could be read with -- a study that fits one
+ * design with several emulator families has more than one, and which of them is
+ * meant is then a decision rather than something to derive. `emulatorDir` makes
+ * that decision; it is ignored unless it names one of the choices.
  */
-export async function getEmulatorInfo(modelId, configOutputsDir = '') {
+export async function getEmulatorInfo(modelId, configWorkingDir = '', emulatorDir = '') {
   const { data } = await axios.get(
     url(
       `/api/emulator/info?model_id=${encodeURIComponent(modelId)}` +
-        `&config_outputs_dir=${encodeURIComponent(configOutputsDir || '')}`,
+        `&working_dir=${encodeURIComponent(configWorkingDir || '')}` +
+        `&emulator_dir=${encodeURIComponent(emulatorDir || '')}`,
     ),
   )
   return data
@@ -571,7 +797,7 @@ export async function getUQStatus(jobId, offset = 0) {
  * cannot draw two different figures from one run.
  */
 /**
- * Everything a finished run left in an outputs directory (#255).
+ * Everything a finished run left in a working dir (#255).
  *
  * The panels are filled by job polls, so without this a run made outside the app -- by
  * cuflynx-param-id, by a generated run_pipeline.py, or by this app yesterday -- is invisible
@@ -586,7 +812,7 @@ export async function getUQStatus(jobId, offset = 0) {
  * dropped .omex, rather than growing a second way to install a study.
  */
 export async function openStudyFromOutputs(dir, runDir = null, filePrefix = null) {
-  const { data } = await axios.post(url('/api/outputs/study'), {
+  const { data } = await axios.post(url('/api/working-dir/study'), {
     dir,
     run_dir: runDir,
     file_prefix: filePrefix,
@@ -594,11 +820,46 @@ export async function openStudyFromOutputs(dir, runDir = null, filePrefix = null
   return data
 }
 
-export async function loadOutputsDirectory(dir, filePrefix, runDir) {
+/**
+ * Which working dir a dropped `<study>_cuflynx_study.json` opens. `text` is
+ * the file's contents; `path` is its location when the shell knows it (a browser
+ * drop does not, and the manifest's own `study_dir` answers instead).
+ */
+export async function openStudyManifest(text, path) {
+  const body = { content: text }
+  if (path) body.path = path
+  const { data } = await axios.post(url('/api/working-dir/manifest'), body)
+  return data
+}
+
+// What a dropped .zip is: `{kind: 'omex'}`, or a zipped working dir staged on the
+// server, `{kind: 'working_dir', token, study_name, default_dir}`. `path` is where the
+// zip is, when the desktop shell exposes it: the proposed folder is then beside it.
+export async function inspectWorkingDirZip(file, path) {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await axios.post(url('/api/working-dir/zip'), form, {
+    params: path ? { zip_path: path } : {},
+  })
+  return data
+}
+
+// Extract a staged working-dir zip into `dest`. Answers like openStudyManifest, plus
+// `warnings`. A 409 means `dest` already holds files: ask, then pass `overwrite`.
+export async function extractWorkingDirZip(token, dest, overwrite = false) {
+  const { data } = await axios.post(url('/api/working-dir/zip/extract'), {
+    token,
+    dest,
+    overwrite,
+  })
+  return data
+}
+
+export async function loadWorkingDir(dir, filePrefix, runDir) {
   const params = new URLSearchParams({ dir })
   if (filePrefix) params.set('file_prefix', filePrefix)
   if (runDir) params.set('run_dir', runDir)
-  const { data } = await axios.get(url(`/api/outputs/load?${params.toString()}`))
+  const { data } = await axios.get(url(`/api/working-dir/load?${params.toString()}`))
   return data
 }
 
@@ -630,5 +891,303 @@ export async function exportPipeline(payload) {
 
 export async function exportPlotting(payload) {
   const { data } = await axios.post(url('/api/export/plotting'), payload)
+  return data
+}
+
+// --- Calibration workflows (circulatory_autogen's libcuflynx.calibration_workflow) ---
+
+/** The open workflow: its file, which parameter of each step lands where, each step's state. */
+export async function getWorkflow() {
+  const { data } = await axios.get(url('/api/workflow'))
+  return data
+}
+
+/**
+ * The background build of the open workflow's tabs: {state: building | paused | done |
+ * declined, left, seconds_per_box, predicted_s, budget_s}, or null.
+ */
+export async function getWorkflowWarmUp() {
+  const { data } = await axios.get(url('/api/workflow/warm-up'))
+  return data.warm_up ?? null
+}
+
+/** Build every tab of the open workflow ahead (everything), or none. */
+export async function buildWorkflowTabs(everything) {
+  const { data } = await axios.post(url('/api/workflow/warm-up'), { everything })
+  return data.warm_up ?? null
+}
+
+/** The working dir's workflows ({path, name, steps, modified}, latest first) and the open one. */
+export async function listWorkflows(workingDir = '') {
+  const { data } = await axios.get(url('/api/workflow/list'), {
+    params: { config_outputs_dir: workingDir },
+  })
+  return data
+}
+
+/**
+ * Delete a step of the open workflow, reconnecting what took from it. When more steps would
+ * go, nothing changes unless `confirm`: `{applied: false, deleted, rewired, dropped}`.
+ */
+export async function deleteWorkflowStep(step, confirm = false) {
+  const { data } = await axios.post(url('/api/workflow/step/delete'), { step, confirm })
+  return data
+}
+
+/**
+ * What passes along one arrow of the open workflow's chart (`source` -> `target` by `key`):
+ * `{what, recorded, rows, prior, distribution, emulator, model, note}`.
+ */
+export async function getWorkflowEdge(source, target, key) {
+  const { data } = await axios.get(url('/api/workflow/edge'), { params: { source, target, key } })
+  return data
+}
+
+/** Rename a step of the open workflow (and every reference to it); its results move with it. */
+export async function renameWorkflowStep(step, to) {
+  const { data } = await axios.post(url('/api/workflow/step/rename'), { step, to })
+  return data
+}
+
+/**
+ * Draw or change an arrow of the open workflow: `target` takes `source` by `key` (CA's key),
+ * with a list key's `options` ({kind, inflate, parameters, objective}); `old_key` when
+ * changing what an existing arrow passes. Returns the workflow's description.
+ */
+export async function drawWorkflowLink({ source, target, key, options = null, oldKey = null }) {
+  const { data } = await axios.post(url('/api/workflow/link'),
+    { source, target, key, options, old_key: oldKey })
+  return data
+}
+
+/** Take an arrow of the open workflow away. */
+export async function deleteWorkflowLink({ source, target, key }) {
+  const { data } = await axios.post(url('/api/workflow/link/delete'), { source, target, key })
+  return data
+}
+
+/** Where a box of the chart sits: its column (of steps) and its order there. */
+export async function placeWorkflowNode(node, col, row) {
+  const { data } = await axios.post(url('/api/workflow/position'), { node, col, row })
+  return data
+}
+
+/**
+ * A new step on the chart (a draft): the description, with `draft` its id. `onTarget`: after
+ * the target, a simulation of the merged target set up in its form.
+ */
+export async function addWorkflowDraft(col = null, row = null, onTarget = false, model = null,
+  action = null) {
+  const { data } = await axios.post(url('/api/workflow/draft'),
+    { col, row, on_target: onTarget, model, action })
+  return data
+}
+
+/** Make a Set values by hand box a set step: [{parameter, value, reason}]. */
+export async function setWorkflowValues({ draft, entries, point = false }) {
+  const { data } = await axios.post(url('/api/workflow/set_values'), { draft, entries, point })
+  return data
+}
+
+/**
+ * Record where a value of the workflow's target comes from, in the target's parameters file:
+ * its origin (one of libcuflynx's; '' for not recorded), data reference and reason. Returns
+ * the workflow described again, the value in its origin's box.
+ */
+export async function setWorkflowValueOrigin({ name, origin = '', dataReference = '', reason = '' }) {
+  const { data } = await axios.post(url('/api/workflow/value_origin'), {
+    name, origin: origin || null, data_reference: dataReference, reason,
+  })
+  return data
+}
+
+/** Make a Choose a parameter set by cost box a combine step of the steps drawn into it
+ * (CA's combine.method: best_fit or mean). */
+export async function combineWorkflowSteps({ draft, method = 'best_fit' }) {
+  const { data } = await axios.post(url('/api/workflow/combine'), { draft, method })
+  return data
+}
+
+/** What a figure action box can draw: {functions: [{function, script, standard, name,
+ * parameters, doc}], kinds: {name: {step_kinds, description}}} (CA's input kinds). */
+export async function workflowFigureFunctions() {
+  const { data } = await axios.get(url('/api/workflow/figure_functions'))
+  return data
+}
+
+/** Make a figure action box CA's figure step: `function` (`<script>:<name>`) and per
+ * parameter the step it reads and the input kind ({param: {kind, step}}). */
+export async function makeWorkflowFigure({ draft, function: fn, inputs, description = '' }) {
+  const { data } = await axios.post(url('/api/workflow/figure_step'),
+    { draft, function: fn, inputs, description })
+  return data
+}
+
+/** The study's params_for_id entries a reduction chosen by hand can keep (CA's labels). */
+export async function workflowReductionCandidates(modelId) {
+  const { data } = await axios.get(url('/api/workflow/reduction_candidates'), { params: { model_id: modelId } })
+  return data
+}
+
+/** Make a model box a reduction chosen by hand: the entries kept, and why. */
+export async function chooseWorkflowParameters({ draft, modelId, parameters, reason }) {
+  const { data } = await axios.post(url('/api/workflow/choose_parameters'),
+    { draft, model_id: modelId, parameters, reason })
+  return data
+}
+
+/** Several boxes placed at once ({id: {col, row}}): a new column made in a gap. */
+export async function placeWorkflowNodes(positions) {
+  const { data } = await axios.post(url('/api/workflow/positions'), { positions })
+  return data
+}
+
+/**
+ * Make an after-target new step a simulation of the merged target: its protocol (`obsData`,
+ * else the study `modelId`'s obs_data), `outputs` recorded, swept `parameters`
+ * ({name: CA's sweep_range}), `design` and `dt`.
+ */
+export async function makeWorkflowSweep({ draft, obsData = null, modelId = null, outputs = [],
+  parameters = {}, design = null, dt = null }) {
+  const { data } = await axios.post(url('/api/workflow/sweep'), {
+    draft, obs_data: obsData, model_id: modelId, outputs, parameters, design, dt })
+  return data
+}
+
+export async function deleteWorkflowDraft(draft) {
+  const { data } = await axios.post(url('/api/workflow/draft/delete'), { draft })
+  return data
+}
+
+/** Move a step of the open workflow to `index`; the server refuses it above a step it takes from. */
+export async function moveWorkflowStep(step, index) {
+  const { data } = await axios.post(url('/api/workflow/step/move'), { step, index })
+  return data
+}
+
+/** Open a calibration_workflow.json by path, or reopen a workflow run directory. */
+export async function loadWorkflow({ path = '', runDir = '', workingDir = '' } = {}) {
+  const { data } = await axios.post(url('/api/workflow/load'), {
+    path,
+    run_dir: runDir,
+    working_dir: workingDir,
+  })
+  return data
+}
+
+/** Open an uploaded calibration_workflow.json (a browser cannot name its path). */
+export async function uploadWorkflow(file, workingDir = '') {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await axios.post(url('/api/workflow/upload'), form, {
+    params: workingDir ? { working_dir: workingDir } : {},
+  })
+  return data
+}
+
+export async function closeWorkflow() {
+  const { data } = await axios.post(url('/api/workflow/close'))
+  return data
+}
+
+/** The working dir changed: the server opens its study workflow in place of another's. */
+export async function followWorkingDir(workingDir) {
+  const { data } = await axios.post(url('/api/workflow/working-dir'), {
+    config_outputs_dir: workingDir,
+  })
+  return data
+}
+
+/**
+ * One tab of the workflow -- a step id, or 'target' -- as a study: the same response a
+ * dropped .omex gives, plus `workflow_view` (fixed values, own results, what it waits for).
+ */
+/** Load one tab of the workflow; an external Python model is kept in `workingDir`. */
+export async function openWorkflowView(view, workingDir = '', { inputs = true } = {}) {
+  const { data } = await axios.post(url('/api/workflow/view'), {
+    view,
+    config_outputs_dir: workingDir,
+    // false: the model only, without the step's obs_data and params_for_id
+    ...(inputs ? {} : { inputs: false }),
+  })
+  return data
+}
+
+/** A workflow step's obs_data or params_for_id as the workflow names it: {path, content}. */
+export async function getWorkflowStepInput(stepId, role) {
+  const { data } = await axios.get(url('/api/workflow/step_input'), {
+    params: { step_id: stepId, role },
+  })
+  return data
+}
+
+/**
+ * Write a workflow step's obs_data (an object) or params_for_id (JSON, or CSV text the
+ * server converts to JSON); a step naming
+ * none is given a file. Returns {path, workflow}: the workflow described again.
+ */
+export async function saveWorkflowStepInput(stepId, role, content) {
+  const { data } = await axios.post(url('/api/workflow/step_input'), {
+    step_id: stepId,
+    role,
+    content: typeof content === 'string' ? content : JSON.stringify(content, null, 2),
+  })
+  return data
+}
+
+export async function runWorkflow({
+  fromStep = '',
+  only = '',
+  numCores = 1,
+  writeCalibrated = false,
+} = {}) {
+  const { data } = await axios.post(url('/api/workflow/run'), {
+    from_step: fromStep,
+    only,
+    num_cores: numCores,
+    write_calibrated: writeCalibrated,
+  })
+  return data
+}
+
+export async function getWorkflowStatus(jobId, offset = 0) {
+  const { data } = await axios.get(
+    url(`/api/workflow/${encodeURIComponent(jobId)}/status?offset=${offset}`),
+  )
+  return data
+}
+
+/**
+ * The open workflow as a COMBINE archive that reruns it: the target model, the workflow
+ * packed by CA (every step's files and the modules it uses, no results) and a study
+ * manifest naming it. Returns `{filename, download_url, member_count}`, for a link.
+ */
+export async function exportWorkflow(workingDir = '') {
+  const { data } = await axios.post(url('/api/workflow/export'), { working_dir: workingDir })
+  return data
+}
+
+export async function cancelWorkflow(jobId) {
+  const { data } = await axios.post(url(`/api/workflow/${encodeURIComponent(jobId)}/cancel`))
+  return data
+}
+
+// --- Variable mapping: the LaTeX symbol of every variable (libcuflynx.reporting) ---
+
+/** Every variable of the model with its symbol, the file it is kept in, and its problems. */
+export async function getVariableMapping(modelId, workingDir = '') {
+  const { data } = await axios.get(
+    url(`/api/models/${encodeURIComponent(modelId)}/variable_mapping`),
+    { params: workingDir ? { working_dir: workingDir } : {} },
+  )
+  return data
+}
+
+/** Save edited symbols ([{variable_name, latex}]); the server writes the file through CA. */
+export async function saveVariableMapping(modelId, rows, workingDir = '') {
+  const { data } = await axios.put(
+    url(`/api/models/${encodeURIComponent(modelId)}/variable_mapping`),
+    { rows, working_dir: workingDir },
+  )
   return data
 }

@@ -34,9 +34,9 @@ def _ui(**over):
         dt=0.01,
         pre_time=0.0,
         sim_time=2.0,
-        model_file="3compartment.cellml",
-        obs_file="3compartment_obs_data.json",
-        params_for_id_file="3compartment_params_for_id.csv",
+        model_path="/study/3compartment.cellml",
+        obs_path="/study/3compartment_obs_data.json",
+        params_for_id_path="/study/3compartment_params_for_id.csv",
         calibration={"param_id_method": "sp_minimize", "gradient_method": "AD"},
         sensitivity={"method": "local"},
         uq={"num_steps": 500},
@@ -53,11 +53,32 @@ def test_build_user_inputs_maps_settings_and_is_yaml_serialisable():
     assert ui["solver_info"]["solver"] == "casadi_integrator"  # solver injected
     assert ui["param_id_method"] == "sp_minimize"
     assert ui["do_ad"] is True  # gradient_method AD -> do_ad
-    # relative resource paths (bundle is self-contained)
-    assert ui["resources_dir"] == "resources"
-    assert ui["param_id_obs_path"] == "resources/3compartment_obs_data.json"
-    assert ui["model_file"] == "3compartment.cellml"
+    # The study's own files: CA's bundle writer copies each in and makes it relative.
+    assert ui["model_path"] == "/study/3compartment.cellml"
+    assert ui["param_id_obs_path"] == "/study/3compartment_obs_data.json"
+    assert ui["params_for_id_path"] == "/study/3compartment_params_for_id.csv"
     yaml.safe_dump(ui)  # must round-trip through yaml
+
+
+def test_no_emulator_unless_the_study_uses_one():
+    ui = _ui(emulator_settings={"num_train_samples": 64})
+    assert ui["do_emulation"] is False and ui["use_emulator"] is False
+    # The panel's settings are kept, so turning on do_emulation trains with them.
+    assert ui["emulator_settings"] == {"num_train_samples": 64}
+
+
+def test_a_trained_emulator_the_study_uses_is_named_for_the_bundle():
+    ui = _ui(use_emulator=True, emulator_dir="/study/emulators/m_obs",
+             emulator_settings={"min_r2": 0.9, "emulator_dir": "/elsewhere"})
+    assert ui["use_emulator"] is True and ui["do_emulation"] is False
+    assert ui["emulator_settings"] == {"min_r2": 0.9, "emulator_dir": "/study/emulators/m_obs"}
+
+
+def test_an_emulator_the_study_uses_and_has_not_trained_is_trained_first():
+    ui = _ui(use_emulator=True, emulator_settings={"num_train_samples": 64})
+    assert ui["use_emulator"] is True and ui["do_emulation"] is True
+    # No emulator_dir: training and use both resolve the bundle's own emulators/.
+    assert "emulator_dir" not in ui["emulator_settings"]
 
 
 def test_enablement_flags_default_and_override():
@@ -212,17 +233,61 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
     assert yaml_files, "dated user_inputs yaml missing"
     ui = yaml.safe_load(open(os.path.join(export_dir, yaml_files[0])))
     assert ui["do_calibration"] is True and ui["do_simulation"] is True
-    assert ui["param_id_obs_path"] == "resources/obs_data.json"
+    # The obs_data keeps its name: CA names the run dirs after it.
+    obs_name = os.path.basename(ui["param_id_obs_path"])
+    assert ui["param_id_obs_path"] == f"resources/{obs_name}"
     # Uses the supplied file_prefix for the model file, not the internal model name.
     assert ui["file_prefix"] == "lotka_volterra"
     assert ui["model_file"] == "lotka_volterra.cellml"
     # Model laid out where circulatory_autogen resolves model_path; obs/params in resources/.
     assert os.path.isfile(os.path.join(export_dir, "generated_models", "lotka_volterra", ui["model_file"]))
     res = os.path.join(export_dir, "resources")
-    assert os.path.isfile(os.path.join(res, "obs_data.json"))
+    assert os.path.isfile(os.path.join(res, obs_name))
     # JSON, not CSV: an uploaded CSV is converted on the way in, so the bundle
     # always carries the canonical form CA and the editors both read.
-    assert os.path.isfile(os.path.join(res, "params_for_id.json"))
+    assert ui["params_for_id_file"].endswith(".json")
+    assert os.path.isfile(os.path.join(res, ui["params_for_id_file"]))
+
+
+def test_the_export_is_written_beside_the_working_dir_not_in_it(client, tmp_path):
+    """The bundle is a working dir of its own: inside <W> it would be read as part of
+    <W>'s study."""
+    working = tmp_path / "study"
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": _setup_lv(client), "file_prefix": "lv",
+        "config_outputs_dir": str(working),
+    })
+    assert resp.status_code == 200, resp.text
+    export_dir = Path(resp.json()["export_dir"])
+    assert export_dir.parent == tmp_path
+    assert export_dir.name == f"study_export_{ep.dated_suffix()}"
+    assert (export_dir / "run_pipeline.py").is_file()
+
+
+def test_the_export_carries_the_trained_emulator_the_study_uses(client, tmp_path, monkeypatch):
+    """With "use the emulator" on, the bundle runs on the same forward model: CA
+    copies the trained bundle in and the yaml names the copy."""
+    import main as main_mod
+
+    trained = tmp_path / "emulators" / "lv_obs"
+    trained.mkdir(parents=True)
+    (trained / "emulator_metadata.json").write_text("{}")
+    monkeypatch.setattr(main_mod, "_emulator_dir_for", lambda *_a, **_k: str(trained))
+    monkeypatch.setattr(main_mod.ca_run_history, "emulator_metadata",
+                        lambda path: {} if os.path.isdir(path) else None)
+
+    resp = client.post("/api/export/pipeline", json={
+        "model_id": _setup_lv(client), "file_prefix": "lv",
+        "use_emulator": True, "emulator": {"min_r2": 0.8},
+        "config_outputs_dir": str(tmp_path / "study"),
+    })
+    assert resp.status_code == 200, resp.text
+    export_dir = Path(resp.json()["export_dir"])
+    ui = yaml.safe_load(next(export_dir.glob("user_inputs_*.yaml")).read_text())
+    assert ui["use_emulator"] is True and ui["do_emulation"] is False
+    assert ui["emulator_settings"]["emulator_dir"] == "emulator"
+    assert ui["emulator_settings"]["min_r2"] == 0.8
+    assert (export_dir / "emulator" / "emulator_metadata.json").is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -240,10 +305,10 @@ def test_export_pipeline_writes_self_contained_folder(client, tmp_path):
 # CA present. These cases therefore assert the null contract directly.
 # ---------------------------------------------------------------------------
 NULLABLE_NUMERIC_SETTINGS = [
-    # Unset budget with no method named: one genetic-algorithm population, from CA's
+    # Unset budget with no method named: CA's default method's budget, from CA's
     # schema (test_optimiser_budget pins the arithmetic).
     ("calibration", "num_calls_to_function", ("optimiser_options", "num_calls_to_function"),
-     lambda: optimiser_budget.default_num_calls("genetic_algorithm")),
+     lambda: optimiser_budget.default_num_calls(optimiser_budget.default_method())),
     ("calibration", "cost_convergence", ("optimiser_options", "cost_convergence"), 0.0001),
     ("calibration", "max_patience", ("optimiser_options", "max_patience"), 10),
     ("sensitivity", "num_samples", ("sa_options", "num_samples"), 256),
@@ -274,7 +339,7 @@ def test_null_settings_still_yaml_serialisable():
         uq={"num_walkers": None, "cost_type": None},
     )
     # Nulls must not leak through into the yaml CA reads back.
-    assert ui["param_id_method"] == "genetic_algorithm"
+    assert ui["param_id_method"] == optimiser_budget.default_method()
     assert ui["sa_options"]["method"] == "sobol"
     assert ui["UQ_options"]["cost_type"] == "gaussian_MLE"
     yaml.safe_dump(ui)
@@ -307,11 +372,11 @@ def test_export_keeps_a_json_params_suffix(client, tmp_path):
     assert resp.status_code == 200, resp.text
     export_dir = resp.json()["export_dir"]
     import os
-    assert os.path.isfile(os.path.join(export_dir, "resources", "params_for_id.json"))
     yaml_files = [f for f in os.listdir(export_dir) if f.startswith("user_inputs_") and f.endswith(".yaml")]
     ui = yaml.safe_load(open(os.path.join(export_dir, yaml_files[0])))
     # build_inp_data_dict derives params_for_id_path from this at run time.
-    assert ui["params_for_id_file"] == "params_for_id.json"
+    assert ui["params_for_id_file"].endswith(".json")
+    assert os.path.isfile(os.path.join(export_dir, "resources", ui["params_for_id_file"]))
 
 
 def test_export_route_accepts_null_option_values(client, tmp_path):
