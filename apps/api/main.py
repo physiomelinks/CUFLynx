@@ -3763,7 +3763,8 @@ def extract_working_dir_zip(req: ExtractWorkingDirZipRequest) -> dict:
     except OSError as exc:
         raise _fs_error(exc, "extract the zip into", dest, user_dir=True) from exc
     staged.unlink(missing_ok=True)
-    manifest = os.path.join(directory, os.path.basename(found["manifest"]))
+    # The manifest's place under the working dir: at its top, or in a study workflow's run.
+    manifest = os.path.join(directory, found["manifest"][len(found["root"]):])
     try:
         opened = study_manifest.study_location(found["raw"], manifest, found["manifest"])
     except study_manifest.ManifestError as exc:

@@ -117,6 +117,42 @@ def find(working_dir: str, prefix: str | None = None) -> str | None:
     return found[0] if found else None
 
 
+def study_root(directory: str) -> str:
+    """The working dir a manifest's folder belongs to.
+
+    A study workflow's run folder (``<W>/workflows/<name>/``, beside its workflow file
+    ``<W>/workflow/<name>/calibration_workflow.json``) is where libcuflynx writes the study
+    manifest of every panel run, so it belongs to ``<W>``. Any other folder is its own.
+    """
+    from study_workflow import RUNS_DIR, WORKFLOW_DIR, WORKFLOW_FILE_NAME  # noqa: PLC0415
+
+    directory = os.path.abspath(directory)
+    runs, name = os.path.split(directory)
+    root, runs_name = os.path.split(runs)
+    if runs_name == RUNS_DIR and os.path.isfile(
+            os.path.join(root, WORKFLOW_DIR, name, WORKFLOW_FILE_NAME)):
+        return root
+    return directory
+
+
+def find_study(directory: str) -> str | None:
+    """The manifest that opens the study in ``directory``: :func:`find`, else the newest
+    one in its study workflows' run folders (see :func:`study_root`)."""
+    found = find(directory)
+    if found:
+        return found
+    from study_workflow import RUNS_DIR  # noqa: PLC0415
+
+    runs = os.path.join(directory, RUNS_DIR)
+    if not os.path.isdir(runs):
+        return None
+    root = os.path.abspath(directory)
+    manifests = [path for entry in os.scandir(runs)
+                 if entry.is_dir() and study_root(entry.path) == root
+                 for path in candidates(entry.path)]
+    return max(manifests, key=os.path.getmtime) if manifests else None
+
+
 def exists(working_dir: str) -> bool:
     return find(working_dir) is not None
 
@@ -253,13 +289,14 @@ def study_location(raw, location: str | None = None,
 
     ``location`` is where the manifest is on disk, when that is known (a desktop drop, a
     picked file, a ``cuflynx://open?study=`` link); the study is then the directory
-    holding it. A manifest with no location (a browser drop carries only its contents)
+    holding it, or the working dir whose study workflow run that directory is
+    (:func:`study_root`). A manifest with no location (a browser drop carries only its contents)
     opens the ``study_dir`` it records. Raises :class:`ManifestError` when the manifest
     cannot be believed or names no directory on this machine.
     """
     check(raw, where)
     if location and os.path.isfile(location):
-        directory = os.path.dirname(os.path.abspath(location))
+        directory = study_root(os.path.dirname(os.path.abspath(location)))
     else:
         directory = raw.get("study_dir")
         if not directory:
@@ -457,7 +494,8 @@ def zip_study(zf: zipfile.ZipFile) -> dict | None:
     """What a zip holds: a working dir, an OMEX, or ``None`` for neither.
 
     A working dir is a zip with a study manifest (``*_cuflynx_study.json``) at its root or
-    one folder down (a zip of the folder rather than of its contents), and no OMEX
+    one folder down (a zip of the folder rather than of its contents), or in a study
+    workflow's run folder there (``workflows/<name>/``, see :func:`study_root`), and no OMEX
     ``manifest.xml`` at its root. Returns ``{"kind": "omex"}`` or ``{"kind": "working_dir",
     "root", "manifest", "raw"}``: ``root`` is the folder prefix holding the manifest
     (``""`` or ``"<folder>/"``), ``raw`` the manifest as read. Raises
@@ -469,11 +507,20 @@ def zip_study(zf: zipfile.ZipFile) -> dict | None:
     names = {info.filename for info in members}
     if OMEX_MANIFEST in names:
         return {"kind": "omex"}
-    found = []
+    from study_workflow import RUNS_DIR, WORKFLOW_DIR, WORKFLOW_FILE_NAME  # noqa: PLC0415
+
+    found = []  # (depth, member, root): a manifest at the root wins over one further down
     for info in members:
         parts = info.filename.rstrip("/").split("/")
-        if not info.is_dir() and len(parts) <= 2 and is_manifest_name(parts[-1]):
-            found.append((len(parts), info.filename))
+        if info.is_dir() or not is_manifest_name(parts[-1]):
+            continue
+        if len(parts) <= 2:
+            found.append((len(parts), info.filename, "/".join(parts[:-1] + [""]).lstrip("/")))
+        elif len(parts) <= 4 and parts[-3] == RUNS_DIR:
+            # A study workflow's run (study_root): the working dir is the folder above it.
+            root = "/".join(parts[:-3] + [""]).lstrip("/")
+            if f"{root}{WORKFLOW_DIR}/{parts[-2]}/{WORKFLOW_FILE_NAME}" in names:
+                found.append((len(parts), info.filename, root))
     if not found:
         return None
     unsafe = [reason for reason in map(_unsafe_member, members) if reason]
@@ -481,13 +528,12 @@ def zip_study(zf: zipfile.ZipFile) -> dict | None:
         raise UnsafeZipError(
             "This zip was not extracted: " + "; ".join(unsafe[:5])
             + (f" (and {len(unsafe) - 5} more)" if len(unsafe) > 5 else ""))
-    _, member = min(found)
+    _, member, root = min(found)
     try:
         raw = json.loads(zf.read(member).decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as error:
         raise ManifestError(f"{member} in the zip could not be read: {error}") from error
     check(raw, member)
-    root = member[: len(member) - len(os.path.basename(member))]
     return {"kind": "working_dir", "root": root, "manifest": member, "raw": raw}
 
 
