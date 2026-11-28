@@ -208,6 +208,21 @@ def test_error_vectors_are_labelled_by_cas_own_names_file(tmp_path):
     assert errors["error_labels"] == ["p_ao", "q_lv", "v_ar"]
 
 
+def test_a_nan_percent_error_is_sent_as_null(tmp_path):
+    """CA writes NaN for a data item whose reference value is 0 (CA #732). JSON has no
+    NaN, so the API sends null, as the live cost does for that item."""
+    import json
+    _ca_run(tmp_path)
+    np.save(tmp_path / "percent_error_vec.npy", np.array([0.96, np.nan, -np.inf]))
+    np.save(tmp_path / "std_error_vec.npy", np.array([0.09, 0.43, np.nan]))
+    np.save(tmp_path / "error_vec_names.npy", np.array(["p_ao", "ratio", "v_ar"]))
+
+    errors = crh.error_vectors(str(tmp_path))
+    assert errors["percent_error"] == [0.96, None, None]
+    assert errors["std_error"] == [0.09, 0.43, None]
+    json.dumps(errors, allow_nan=False)  # what the API's encoder does
+
+
 def test_missing_error_vectors_are_absent_not_zero(tmp_path):
     """They are written by plot_outputs(), not by run(), so a run that never
     plotted has none -- which is different from having errors of zero."""

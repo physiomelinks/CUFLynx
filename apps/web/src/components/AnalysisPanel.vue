@@ -499,9 +499,14 @@ function barColors(values, hi) {
 function errorBars(values, hi, fmt, labels = null) {
   const vals = values ?? []
   const names = labels ?? props.errorLabels
-  const maxAbs = Math.max(1e-9, ...vals.map((v) => Math.abs(v)))
+  const maxAbs = Math.max(1e-9, ...vals.filter((v) => v != null).map((v) => Math.abs(v)))
   const colors = barColors(vals, hi)
   return vals.map((v, i) => {
+    // no error to draw (a percent error against a reference value of 0): the row stays,
+    // so labels keep their places, with a dash and no bar
+    if (v == null) {
+      return { label: names[i] ?? `obs ${i}`, color: 'transparent', width: '0%', left: '50%', text: '—' }
+    }
     const halfPct = (Math.min(1, Math.abs(v) / maxAbs) * 50).toFixed(2)
     return {
       label: names[i] ?? `obs ${i}`,
