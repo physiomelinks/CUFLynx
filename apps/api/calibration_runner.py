@@ -389,8 +389,9 @@ def _generate_error_vectors(param_id, output_dir: str) -> dict:
         pe = _find_output_file(param_id, output_dir, "percent_error_vec.npy")
         se = _find_output_file(param_id, output_dir, "std_error_vec.npy")
         if pe and se:
-            out["percent_error"] = [float(x) for x in np.load(pe)]
-            out["std_error"] = [float(x) for x in np.load(se)]
+            from ca_run_history import finite_or_none  # local: runners/ sibling
+            out["percent_error"] = finite_or_none(np.load(pe))
+            out["std_error"] = finite_or_none(np.load(se))
             obs_info = getattr(param_id, "obs_info", {}) or {}
             out["error_labels"] = [str(n) for n in ca_obs.item_labels(obs_info)]
     except Exception as exc:  # noqa: BLE001

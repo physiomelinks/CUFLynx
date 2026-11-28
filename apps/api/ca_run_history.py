@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 from pathlib import Path
 
@@ -242,6 +243,17 @@ def modifiers(output_dir: str) -> list:
     return out
 
 
+def finite_or_none(values) -> list:
+    """``values`` flattened to floats, with ``None`` for each NaN or infinite entry.
+
+    CA writes a percent error of NaN for a data item whose reference value is 0 (CA #732),
+    and JSON has no NaN: the API's encoder refuses it. ``None`` is what the live cost
+    (``obs_cost``) already sends for that item, and the bar charts draw no bar for it.
+    """
+    import numpy as np
+    return [float(v) if math.isfinite(v) else None for v in np.asarray(values, float).reshape(-1)]
+
+
 def error_vectors(output_dir: str) -> dict:
     """Per-observable fit errors for the Analysis tab's bar charts.
 
@@ -257,8 +269,8 @@ def error_vectors(output_dir: str) -> dict:
     std = _npy(run_dir, "std_error_vec.npy")
     names = _npy(run_dir, "error_vec_names.npy", allow_pickle=True)
     return {
-        "percent_error": None if percent is None else [float(v) for v in percent.reshape(-1)],
-        "std_error": None if std is None else [float(v) for v in std.reshape(-1)],
+        "percent_error": None if percent is None else finite_or_none(percent),
+        "std_error": None if std is None else finite_or_none(std),
         "error_labels": [] if names is None else [str(v) for v in names.reshape(-1)],
     }
 
