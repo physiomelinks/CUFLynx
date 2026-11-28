@@ -80,6 +80,14 @@ def _multipart(url: str, field: str, path: Path, extra: dict, timeout=60):
         return resp.status, json.loads(resp.read().decode())
 
 
+def _start_run(base: str, route: str, model_id: str, settings: dict, working_dir: str) -> str:
+    """POST an analysis run and return its job id. Every run needs a working dir (the
+    app refuses one without, with a 422), so each is given the same scratch folder."""
+    _, r = _req("POST", f"{base}/api/{route}",
+                data={"model_id": model_id, "settings": {**settings, "working_dir": working_dir}})
+    return r["job_id"]
+
+
 def _wait_health(base: str, timeout=90) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -326,6 +334,8 @@ def main() -> int:
         [args.binary, "--port", str(args.port), "--browser"],
         cwd=str(ROOT),
     )
+    work = tempfile.TemporaryDirectory(prefix="cuflynx-smoke-wd-")
+    wd = work.name
     try:
         if not _wait_health(base):
             _fail("app did not become healthy")
@@ -375,9 +385,8 @@ def main() -> int:
             "method": "local", "gradient_method": "FD", "nominal": "current",
             "rel_step": 0.05, "dt": 0.01, "num_cores": 1,
         }
-        _, r = _req("POST", f"{base}/api/sensitivity/run",
-                    data={"model_id": model_id, "settings": sa_settings})
-        sa = _poll_job(base, "sensitivity", r["job_id"], args.sensitivity_timeout)
+        job = _start_run(base, "sensitivity/run", model_id, sa_settings, wd)
+        sa = _poll_job(base, "sensitivity", job, args.sensitivity_timeout)
         if sa["state"] != "done":
             _fail(f"sensitivity ended in state {sa['state']!r}", sa.get("_lines"))
         print(f"sensitivity OK (state=done)")
@@ -387,9 +396,8 @@ def main() -> int:
             "param_id_method": "genetic_algorithm",
             "num_calls_to_function": 30, "DEBUG": True, "dt": 0.01,
         }
-        _, r = _req("POST", f"{base}/api/calibration/run",
-                    data={"model_id": model_id, "settings": cal_settings})
-        cal = _poll_job(base, "calibration", r["job_id"], args.calibration_timeout)
+        job = _start_run(base, "calibration/run", model_id, cal_settings, wd)
+        cal = _poll_job(base, "calibration", job, args.calibration_timeout)
         if cal["state"] != "done":
             _fail(f"calibration ended in state {cal['state']!r}", cal.get("_lines"))
         best = cal.get("best_params") or {}
@@ -407,19 +415,17 @@ def main() -> int:
         #    traceback). Nothing here ran multi-core, so it shipped.
         if args.full and args.num_cores > 1:
             print(f"\n--- multi-core arm ({args.num_cores} ranks) ---")
-            _, r = _req("POST", f"{base}/api/sensitivity/run",
-                        data={"model_id": model_id,
-                              "settings": {**sa_settings, "num_cores": args.num_cores}})
-            sa_par = _poll_job(base, "sensitivity", r["job_id"], args.sensitivity_timeout)
+            job = _start_run(base, "sensitivity/run", model_id,
+                             {**sa_settings, "num_cores": args.num_cores}, wd)
+            sa_par = _poll_job(base, "sensitivity", job, args.sensitivity_timeout)
             if sa_par["state"] != "done":
                 _fail(f"a {args.num_cores}-rank sensitivity ended in state "
                       f"{sa_par['state']!r}", sa_par.get("_lines"))
             print(f"sensitivity on {args.num_cores} ranks OK")
 
-            _, r = _req("POST", f"{base}/api/calibration/run",
-                        data={"model_id": model_id,
-                              "settings": {**cal_settings, "num_cores": args.num_cores}})
-            cal_par = _poll_job(base, "calibration", r["job_id"], args.calibration_timeout)
+            job = _start_run(base, "calibration/run", model_id,
+                             {**cal_settings, "num_cores": args.num_cores}, wd)
+            cal_par = _poll_job(base, "calibration", job, args.calibration_timeout)
             if cal_par["state"] != "done":
                 _fail(f"a {args.num_cores}-rank calibration ended in state "
                       f"{cal_par['state']!r}", cal_par.get("_lines"))
@@ -430,13 +436,12 @@ def main() -> int:
             # A seeded Sobol design and a capped model search, as CA's own emulator
             # tests use: the point here is that N ranks can train at all, not how good
             # the emulator is, and an uncapped autoemulate search would dominate the job.
-            _, r = _req("POST", f"{base}/api/emulator/train",
-                        data={"model_id": model_id,
-                              "settings": {"num_train_samples": 24, "dt": 0.01,
-                                           "sample_type": "sobol", "random_seed": 0,
-                                           "n_iter": 2, "n_splits": 2,
-                                           "num_cores": args.num_cores}})
-            emu = _poll_job(base, "emulator", r["job_id"], args.calibration_timeout)
+            job = _start_run(base, "emulator/train", model_id,
+                             {"num_train_samples": 24, "dt": 0.01,
+                              "sample_type": "sobol", "random_seed": 0,
+                              "n_iter": 2, "n_splits": 2,
+                              "num_cores": args.num_cores}, wd)
+            emu = _poll_job(base, "emulator", job, args.calibration_timeout)
             if emu["state"] != "done":
                 _fail(f"a {args.num_cores}-rank emulator training ended in state "
                       f"{emu['state']!r}", emu.get("_lines"))
@@ -445,6 +450,7 @@ def main() -> int:
         print("\nANALYSIS SMOKE PASSED: sensitivity + calibration ran in the built app")
         return 0
     finally:
+        work.cleanup()
         proc.terminate()
         try:
             proc.wait(timeout=10)
