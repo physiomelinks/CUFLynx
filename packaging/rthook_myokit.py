@@ -28,6 +28,7 @@ them. Same class of bug, same fix.
 """
 
 import os
+import pathlib
 import sys
 import sysconfig
 
@@ -37,10 +38,12 @@ if hasattr(sys, "_MEIPASS"):
     except ImportError:  # myokit not bundled — nothing to fix
         pass
     else:
-        _base = os.path.join(sys._MEIPASS, "myokit")
+        # Paths, not strings: Myokit 1.41 joins them with `/` (DIR_CFUNC / SOURCE_FILE),
+        # and the older versions' os.path.join takes a Path as well.
+        _base = pathlib.Path(sys._MEIPASS) / "myokit"
         myokit.DIR_MYOKIT = _base
-        myokit.DIR_CFUNC = os.path.join(_base, "_sim")  # C templates + headers
-        myokit.DIR_DATA = os.path.join(_base, "_bin")
+        myokit.DIR_CFUNC = _base / "_sim"  # C templates + headers
+        myokit.DIR_DATA = _base / "_bin"
 
         # Sundials (CVODE) is bundled too, so the user doesn't have to install it.
         # Like DIR_CFUNC these are read at call time (myokit/_sim/cvodessim.py),

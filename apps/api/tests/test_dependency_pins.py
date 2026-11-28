@@ -35,6 +35,13 @@ def test_libcellml_floor_is_0_7_2():
     assert _requirement("libcellml") == "libcellml>=0.7.2"
 
 
+def test_setuptools_stays_below_82():
+    """setuptools 82 removed pkg_resources. PyInstaller's pkg_resources runtime hook
+    then stops the packaged app at launch (macos-latest, run 46102868186), so the
+    build environment must resolve an earlier setuptools."""
+    assert _requirement("setuptools") == "setuptools>=60,<82"
+
+
 def test_libcellml_pin_matches_circulatory_autogen():
     """Our bundle *is* the environment CA runs in, so the two constraints have to agree.
     Read from the CA checkout the unit tier pins (``CIRCULATORY_AUTOGEN_SRC``)."""
