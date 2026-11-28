@@ -572,6 +572,21 @@ def test_a_zip_with_no_path_is_proposed_in_the_documents_dir_under_a_free_name(
     assert body["default_dir"] == str(tmp_path / "Documents" / "LV_2")
 
 
+def test_a_zipped_working_dir_whose_manifest_is_in_its_study_workflow_run_opens_whole(
+        client, tmp_path, staged_zips):
+    # What a 0.8.0 panel run leaves: the manifest in workflows/study/, not at the top.
+    archive = _zip_of({"W/workflows/study/study_cuflynx_study.json": MANIFEST_ONLY,
+                       "W/workflow/study/calibration_workflow.json": "{}",
+                       "W/inputs/index.json": "{}"}, tmp_path / "W.zip")
+    body = _drop_zip(client, archive, zip_path=str(archive)).json()
+    assert body["kind"] == "working_dir", body
+    dest = tmp_path / "out"
+    resp = client.post("/api/working-dir/zip/extract", json={"token": body["token"], "dest": str(dest)})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["dir"] == str(dest)
+    assert (dest / "workflows" / "study" / "study_cuflynx_study.json").is_file()
+
+
 def test_an_omex_dropped_as_a_zip_is_still_an_omex(client, tmp_path, staged_zips):
     archive = tmp_path / "3compartment.zip"
     shutil.copy(REPO_RESOURCES / "3compartment.omex", archive)

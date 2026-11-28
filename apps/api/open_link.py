@@ -220,14 +220,14 @@ def fetch(url: str, max_bytes: int = MAX_DELIVERY_BYTES, timeout: float = DOWNLO
 def read_study(url: str, max_bytes: int = MAX_DELIVERY_BYTES) -> tuple[str, bytes, dict]:
     """The manifest a study URL names: ``(path, bytes as read, parsed manifest)``.
 
-    A directory names the manifest in it (:func:`study_manifest.find`: the newest when
-    there are several). Raises :class:`OpenLinkError` when there is no such file or
+    A directory names the manifest in it (:func:`study_manifest.find_study`: the newest when
+    there are several, or one in its study workflow's run folder). Raises :class:`OpenLinkError` when there is no such file or
     directory, it holds no manifest, the file is not one, or the manifest cannot be
     believed or opened (:func:`study_manifest.study_location`).
     """
     target = file_path_of(url)
     if target.is_dir():
-        found = study_manifest.find(str(target))
+        found = study_manifest.find_study(str(target))
         if not found:
             raise OpenLinkError(
                 f"{target} holds no {study_manifest.MANIFEST_NAME} or "
