@@ -93,10 +93,10 @@ jobs:
 
       - name: Token for PhLynx's status issue
         id: token
-        if: github.event_name != 'pull_request' && vars.PHLYNX_ROUND_TRIP_APP_ID != ''
-        uses: actions/create-github-app-token@v2
+        if: github.event_name != 'pull_request' && vars.PHLYNX_ROUND_TRIP_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ vars.PHLYNX_ROUND_TRIP_APP_ID }}
+          client-id: ${{ vars.PHLYNX_ROUND_TRIP_APP_CLIENT_ID }}
           private-key: ${{ secrets.PHLYNX_ROUND_TRIP_APP_KEY }}
           owner: physiomelinks
           repositories: PhLynx
