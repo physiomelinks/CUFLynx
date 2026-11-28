@@ -61,7 +61,9 @@ dependencies = [
     # frozen process, and that compile uses setuptools' build_ext command. Python <=3.11
     # venvs happen to ship setuptools, which is why relying on it has worked so far; 3.12
     # removed it from the default venv, and packaging/cuflynx.spec requires it either way.
-    "setuptools>=60",
+    # Below 82: setuptools 82 removed pkg_resources, and PyInstaller's pkg_resources
+    # runtime hook then stops the packaged app at launch (AttributeError: NullProvider).
+    "setuptools>=60,<82",
     # CellML simulation (circulatory_autogen Myokit path).
     # Required only for the integration tier; unit tests run without them.
     "myokit>=1.39.1",
